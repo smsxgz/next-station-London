@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.pdf
+*.pt
+.venv/
+artifacts/
+build/
+dist/
+benchmark_results/
+replay.dat
+priorities.dat
+
+# Local-only browser applications
+src/web/
+src/helper/
+/run_*.py
+review.md
+
+# Notebook/editor generated state
+**/.ipynb_checkpoints/
+
+# Locally generated source bundles
+*.zip
