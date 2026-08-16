@@ -8,7 +8,7 @@ from pathlib import Path
 import random
 from time import perf_counter
 
-from engine import Action, GameError, GameSession
+from engine_cpp import Action, GameError, GameSession
 
 from ..mcts import DEFAULT_MCTS_EXPLORATION
 from ..scoring import position_score

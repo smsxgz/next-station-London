@@ -7,7 +7,7 @@ import math
 import random
 from time import perf_counter
 
-from engine import Action, GameError, GameSession
+from engine_cpp import Action, GameError, GameSession
 
 from .greedy import deterministic_greedy_action
 from .scoring import position_score

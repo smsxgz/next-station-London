@@ -11,7 +11,7 @@ import random
 from time import perf_counter
 from typing import Any
 
-from engine import GameSession
+from engine_cpp import GameSession
 from solver import (
     DEFAULT_MCTS_EXPLORATION,
     DEFAULT_MCTS_SIMULATIONS,

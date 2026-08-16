@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import fmean, median, stdev
 from typing import Any, Sequence
 
-from engine import PENCIL_POWERS, GameSession
+from engine_cpp import PENCIL_POWERS, GameSession
 
 
 def load_json(path: Path) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Machine-readable data for the London player map.
+"""Static Python view of the London map used by encoders and policies.
 
 The printed map uses a ten by ten lattice.  A potential section connects two
 stations on one of the eight compass directions when no other station lies

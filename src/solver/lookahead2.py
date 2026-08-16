@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from engine import Action, GameSession, PENCIL_POWER_DOUBLE
+from engine_cpp import Action, GameSession, PENCIL_POWER_DOUBLE
 
 from .lookahead import DepthKPolicy
 from .scoring import ImmediateReward, _RewardContext, _reward_context

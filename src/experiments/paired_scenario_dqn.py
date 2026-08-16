@@ -8,7 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from engine import GameSession
+from engine_cpp import GameSession
 from solver.RL import PairedScenarioDQNPolicy
 
 from .records import append_jsonl, build_game_record, describe, load_json, load_jsonl, write_json

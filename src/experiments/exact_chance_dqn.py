@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from engine import GameSession
+from engine_cpp import GameSession
 from solver.RL import (
     DQNPolicy,
     ExactChanceDQNPolicy,

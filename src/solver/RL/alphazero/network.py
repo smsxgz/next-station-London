@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-import torch
 from torch import Tensor, nn
 
 from ..codec import ACTION_COUNT, OBSERVATION_DIM

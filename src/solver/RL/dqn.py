@@ -10,14 +10,12 @@ from numpy.typing import NDArray
 import torch
 from torch import Tensor, nn
 
-from engine import Action, GameError, GameSession
+from engine_cpp import Action, GameError, GameSession
 
 from .codec import (
     ACTION_COUNT,
     OBSERVATION_DIM,
     PASS_ACTION_INDEX,
-    ActionMask,
-    Observation,
     encode_decision,
 )
 
@@ -272,19 +270,9 @@ class DQNPolicy:
                 checkpoint.get("config", {}).get("algorithm", "dqn"),
             )
         )
-        if algorithm == "dqn":
-            network: ActionValueNetwork = QNetwork(spec)
-        elif algorithm == "c51":
-            from .c51 import CategoricalQNetwork
-
-            network = CategoricalQNetwork(
-                spec,
-                atom_count=int(raw_spec["atom_count"]),
-                value_min=float(raw_spec["value_min"]),
-                value_max=float(raw_spec["value_max"]),
-            )
-        else:
+        if algorithm != "dqn":
             raise ValueError(f"unsupported checkpoint algorithm: {algorithm}")
+        network: ActionValueNetwork = QNetwork(spec)
         network.load_state_dict(checkpoint[f"{weights}_state_dict"])
         return cls(network, device=str(resolved))
 

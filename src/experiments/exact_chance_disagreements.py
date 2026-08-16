@@ -9,7 +9,7 @@ from statistics import fmean
 from time import perf_counter
 from typing import Any, Iterable
 
-from engine import DECK_BY_ID, GameSession
+from engine_cpp import DECK_BY_ID, GameSession
 from solver.RL import ExactChanceDQNPolicy
 
 from .records import append_jsonl, describe, load_json, write_json

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from engine import Action, GameSession
+from engine_cpp import Action, GameSession
 
 from .dqn import ActionValueNetwork, DQNPolicy
 from .exact_chance import (

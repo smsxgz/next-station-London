@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 import random
 
-from engine import (
+from engine_cpp import (
     Action,
     GameError,
     GameSession,

@@ -17,11 +17,8 @@ from typing import Any, Sequence
 import numpy as np
 from numpy.typing import NDArray
 import torch
-from torch import Tensor
 
-from engine import GameSession
-
-from ..codec import ACTION_COUNT, PASS_ACTION_INDEX
+from ..codec import ACTION_COUNT
 from ..dqn import resolve_device
 from ..environment import DecisionEnv
 from .network import NetworkSpec, PolicyValueNetwork, parameter_count
@@ -30,7 +27,6 @@ from .search import (
     VALUE_SCALE,
     BatchedPUCT,
     PolicyValueEvaluator,
-    SearchBatchStats,
     SearchConfig,
 )
 

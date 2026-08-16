@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from engine import Action, COLORS, DECK, GameError, GameSession, LONDON, SYMBOLS
+from engine_cpp import Action, COLORS, DECK, GameError, GameSession, LONDON, SYMBOLS
 
 
 NUM_COLORS = len(COLORS)

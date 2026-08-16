@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import random
 
-from engine import Action, GameError, GameSession
+from engine_cpp import Action, GameError, GameSession
 
 from .scoring import (
     ImmediateReward,

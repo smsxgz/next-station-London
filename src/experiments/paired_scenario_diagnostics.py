@@ -9,7 +9,7 @@ from statistics import fmean
 from time import perf_counter
 from typing import Any, Sequence
 
-from engine import Action, GameSession
+from engine_cpp import Action, GameSession
 from solver.RL import (
     DQNPolicy,
     ExactChanceDQNPolicy,

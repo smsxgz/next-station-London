@@ -15,6 +15,7 @@ next-station-dqn-mcts = "experiments.dqn_mcts:main"
 next-station-compare = "experiments.compare:main"
 next-station-benchmark = "experiments.benchmark:main"
 next-station-rl = "solver.RL.cli:main"
+next-station-afterstate = "rl.afterstate.cli:main"
 
 [project.optional-dependencies]
 rl = [
@@ -24,4 +25,4 @@ rl = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["engine", "engine.*", "solver", "solver.*", "experiments"]
+include = ["engine_cpp", "engine_cpp.*", "solver", "solver.*", "experiments", "rl", "rl.*"]

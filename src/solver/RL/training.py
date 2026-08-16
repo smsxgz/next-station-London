@@ -15,6 +15,7 @@ from time import perf_counter
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+from numpy.typing import NDArray
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -25,7 +26,6 @@ from .codec import (
     encode_decision,
     observation_feature_counts,
 )
-from .c51 import CategoricalQNetwork, project_distribution
 from .dqn import (
     ActionValueNetwork,
     NetworkSpec,
@@ -46,7 +46,6 @@ from .replay import (
 @dataclass(frozen=True, slots=True)
 class TrainConfig:
     seed: int
-    algorithm: str = "dqn"
     num_envs: int = 128
     total_transitions: int = 10_000_000
     n_steps: int = 1
@@ -68,9 +67,6 @@ class TrainConfig:
     epsilon_final: float = 0.05
     epsilon_decay_transitions: int = 1_000_000
     reward_scale: float = 10.0
-    atom_count: int = 51
-    value_min: float = 0.0
-    value_max: float = 20.0
     gradient_clip: float = 10.0
     hidden_sizes: tuple[int, ...] = (512, 512)
     validation_seeds: tuple[int, ...] = ()
@@ -100,7 +96,6 @@ class TrainConfig:
             "evaluation_envs": self.evaluation_envs,
             "log_interval": self.log_interval,
             "checkpoint_interval": self.checkpoint_interval,
-            "atom_count": self.atom_count,
         }
         for name, value in positive_ints.items():
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -113,11 +108,9 @@ class TrainConfig:
             raise ValueError("epsilon_final must be in [0, 1]")
         if self.replay_ratio <= 0.0:
             raise ValueError("replay_ratio must be positive")
-        if self.algorithm not in {"dqn", "c51"}:
-            raise ValueError("algorithm must be dqn or c51")
         if self.target_depth not in {0, 1, 2}:
             raise ValueError("target_depth must be 0, 1, or 2")
-        if self.target_depth and (self.algorithm != "dqn" or self.n_steps != 1):
+        if self.target_depth and self.n_steps != 1:
             raise ValueError("exact-chance targets require one-step DQN")
         if self.replay_kind not in {"uniform", "prioritized"}:
             raise ValueError("replay_kind must be uniform or prioritized")
@@ -133,14 +126,6 @@ class TrainConfig:
             raise ValueError("priority_epsilon must be positive")
         if self.learning_rate <= 0.0 or self.reward_scale <= 0.0:
             raise ValueError("learning_rate and reward_scale must be positive")
-        if self.atom_count < 2:
-            raise ValueError("atom_count must be at least 2")
-        if (
-            not math.isfinite(self.value_min)
-            or not math.isfinite(self.value_max)
-            or self.value_min >= self.value_max
-        ):
-            raise ValueError("value support must have finite increasing bounds")
         if self.gradient_clip <= 0.0:
             raise ValueError("gradient_clip must be positive")
         if self.replay_capacity < self.batch_size:
@@ -162,6 +147,12 @@ class TrainConfig:
     def from_dict(cls, raw: dict[str, Any]) -> TrainConfig:
         values = dict(raw)
         values.pop("schema_version", None)
+        algorithm = values.pop("algorithm", "dqn")
+        if algorithm != "dqn":
+            raise ValueError(f"unsupported checkpoint algorithm: {algorithm}")
+        values.pop("atom_count", None)
+        values.pop("value_min", None)
+        values.pop("value_max", None)
         values["hidden_sizes"] = tuple(int(size) for size in values["hidden_sizes"])
         values["validation_seeds"] = tuple(
             int(seed) for seed in values.get("validation_seeds", ())
@@ -327,139 +318,6 @@ class DQNLearner:
         )
 
 
-class C51Learner:
-    def __init__(self, config: TrainConfig, device: torch.device) -> None:
-        self.config = config
-        self.device = device
-        spec = NetworkSpec(hidden_sizes=config.hidden_sizes)
-        self.online = CategoricalQNetwork(
-            spec,
-            atom_count=config.atom_count,
-            value_min=config.value_min,
-            value_max=config.value_max,
-        ).to(device)
-        self.target = CategoricalQNetwork(
-            spec,
-            atom_count=config.atom_count,
-            value_min=config.value_min,
-            value_max=config.value_max,
-        ).to(device)
-        self.target.load_state_dict(self.online.state_dict())
-        self.target.eval()
-        self.optimizer = torch.optim.Adam(
-            self.online.parameters(), lr=config.learning_rate
-        )
-        self.updates = 0
-
-    def update(self, batch: ReplayBatch) -> LearnerUpdate:
-        observations = torch.as_tensor(
-            batch.observations, device=self.device, dtype=torch.float32
-        )
-        actions = torch.as_tensor(
-            batch.actions, device=self.device, dtype=torch.int64
-        )
-        rewards = torch.as_tensor(
-            batch.rewards,
-            device=self.device,
-            dtype=torch.float32,
-        ) / self.config.reward_scale
-        next_observations = torch.as_tensor(
-            batch.next_observations,
-            device=self.device,
-            dtype=torch.float32,
-        )
-        next_masks = torch.as_tensor(
-            batch.next_action_masks,
-            device=self.device,
-            dtype=torch.bool,
-        )
-        terminated = torch.as_tensor(
-            batch.terminated,
-            device=self.device,
-            dtype=torch.float32,
-        )
-        steps = torch.as_tensor(
-            batch.steps,
-            device=self.device,
-            dtype=torch.float32,
-        )
-        weights = torch.as_tensor(
-            batch.weights,
-            device=self.device,
-            dtype=torch.float32,
-        )
-        batch_indices = torch.arange(len(actions), device=self.device)
-
-        chosen_logits = self.online(observations)[batch_indices, actions]
-        with torch.no_grad():
-            next_actions = masked_argmax(
-                self.online.q_values(next_observations), next_masks
-            )
-            next_logits = self.target(next_observations)[
-                batch_indices, next_actions
-            ]
-            next_probabilities = F.softmax(next_logits, dim=-1)
-            discounts = torch.pow(
-                torch.full_like(steps, self.config.gamma), steps
-            )
-            target_probabilities, lower_clip, upper_clip = project_distribution(
-                next_probabilities,
-                rewards,
-                terminated,
-                discounts,
-                self.online.support,
-            )
-
-        log_probabilities = F.log_softmax(chosen_logits, dim=-1)
-        element_losses = -(
-            target_probabilities * log_probabilities
-        ).sum(dim=1)
-        loss = (element_losses * weights).mean()
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        gradient_norm = nn.utils.clip_grad_norm_(
-            self.online.parameters(), self.config.gradient_clip
-        )
-        self.optimizer.step()
-        self.updates += 1
-        if self.updates % self.config.target_update_interval == 0:
-            self.target.load_state_dict(self.online.state_dict())
-
-        support = self.online.support
-        predicted_values = (
-            F.softmax(chosen_logits.detach(), dim=-1) * support
-        ).sum(dim=1)
-        target_values = (target_probabilities * support).sum(dim=1)
-        td_errors = (target_values - predicted_values).abs()
-        scale = self.config.reward_scale
-        return LearnerUpdate(
-            metrics={
-                "loss": float(loss.detach().item()),
-                "q_mean": float(predicted_values.mean().item() * scale),
-                "target_mean": float(target_values.mean().item() * scale),
-                "td_abs_mean": float(td_errors.mean().item() * scale),
-                "gradient_norm": float(gradient_norm.detach().item()),
-                "importance_weight_mean": float(weights.mean().item()),
-                "support_lower_clip_mass": float(lower_clip.mean().item()),
-                "support_upper_clip_mass": float(upper_clip.mean().item()),
-            },
-            td_errors=np.ascontiguousarray(
-                td_errors.detach().cpu().numpy(), dtype=np.float32
-            ),
-        )
-
-
-Learner = DQNLearner | C51Learner
-
-
-def _make_learner(config: TrainConfig, device: torch.device) -> Learner:
-    if config.algorithm == "dqn":
-        return DQNLearner(config, device)
-    if config.algorithm == "c51":
-        return C51Learner(config, device)
-    raise ValueError(f"unsupported algorithm: {config.algorithm}")
-
-
 def generate_validation_seeds(seed: int, count: int) -> tuple[int, ...]:
     if count < 1:
         return ()
@@ -590,7 +448,7 @@ def load_config(run_dir: Path) -> TrainConfig:
 
 def _checkpoint_payload(
     config: TrainConfig,
-    learner: Learner,
+    learner: DQNLearner,
     replay: PackedReplayBuffer,
     vector_env: VectorDecisionEnv,
     rng: np.random.Generator,
@@ -603,7 +461,7 @@ def _checkpoint_payload(
     payload: dict[str, Any] = {
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "algorithm": config.algorithm,
+        "algorithm": "dqn",
         "config": config.to_dict(),
         "network_spec": learner.online.config(),
         "online_state_dict": learner.online.state_dict(),
@@ -648,7 +506,6 @@ def _write_summary(
     lines = [
         "# Deep RL training summary",
         "",
-        f"- Algorithm: `{config.algorithm}`",
         f"- Transitions: `{transitions}`",
         f"- Gradient updates: `{updates}`",
         f"- Environments: `{config.num_envs}`",
@@ -676,14 +533,6 @@ def _write_summary(
                 f"- Priority alpha: `{config.priority_alpha}`",
                 f"- Priority beta: `{config.priority_beta_start}` -> "
                 f"`{config.priority_beta_end}`",
-            ]
-        )
-    if config.algorithm == "c51":
-        lines.extend(
-            [
-                f"- Atoms: `{config.atom_count}`",
-                f"- Normalized support: `[{config.value_min}, "
-                f"{config.value_max}]`",
             ]
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
@@ -757,7 +606,7 @@ def train(
             path=replay_path,
             resume=resume,
         )
-    learner = _make_learner(config, device)
+    learner = DQNLearner(config, device)
 
     if not resume and config.init_checkpoint is not None:
         if not isinstance(learner, DQNLearner):
@@ -811,7 +660,7 @@ def train(
         f"device={device}; envs={config.num_envs}; observation={OBSERVATION_DIM}; "
         f"actions={ACTION_COUNT}; n_steps={config.n_steps}; "
         f"target_depth={config.target_depth}; "
-        f"algorithm={config.algorithm}; replay_kind={config.replay_kind}; "
+        f"replay_kind={config.replay_kind}; "
         f"replay={replay.allocated_bytes / 2**20:.1f} MiB; "
         f"start={transitions}; target={config.total_transitions}",
         flush=True,
@@ -1161,7 +1010,6 @@ def run_self_check(
     *,
     games: int = 16,
     device_name: str = "auto",
-    algorithm: str = "dqn",
 ) -> dict[str, float | int | str]:
     """Exercise encoding, rewards, n-step replay, masking, and one update."""
 
@@ -1210,7 +1058,6 @@ def run_self_check(
     batch = replay.sample(batch_size, rng)
     config = TrainConfig(
         seed=seed,
-        algorithm=algorithm,
         num_envs=num_envs,
         total_transitions=1_000,
         replay_capacity=4_096,
@@ -1222,7 +1069,7 @@ def run_self_check(
     config.validate()
     device = resolve_device(device_name)
     torch.manual_seed(seed)
-    learner = _make_learner(config, device)
+    learner = DQNLearner(config, device)
     initial_actions = select_action_indices(
         learner.online,
         vector_env.observations,
@@ -1237,42 +1084,6 @@ def run_self_check(
     ):
         raise RuntimeError("initial value network selected an illegal action")
 
-    if isinstance(learner, C51Learner):
-        support = learner.online.support
-        probabilities = torch.zeros(
-            (3, config.atom_count), device=device, dtype=torch.float32
-        )
-        probabilities[0, 0] = 1.0
-        probabilities[1, 10] = 1.0
-        probabilities[2, 0] = 1.0
-        half_atom = support[1] / 2.0
-        test_rewards = torch.stack(
-            (support[10], half_atom, support[-1] + 1.0)
-        )
-        projected, lower_clip, upper_clip = project_distribution(
-            probabilities,
-            test_rewards,
-            torch.tensor((1.0, 0.0, 1.0), device=device),
-            torch.ones(3, device=device),
-            support,
-        )
-        if not torch.allclose(
-            projected.sum(dim=1), torch.ones(3, device=device)
-        ):
-            raise RuntimeError("C51 projection does not conserve probability")
-        if not torch.isclose(projected[0, 10], torch.tensor(1.0, device=device)):
-            raise RuntimeError("C51 exact-atom terminal projection is incorrect")
-        interpolated_value = (projected[1] * support).sum()
-        if not torch.isclose(
-            interpolated_value, support[10] + half_atom
-        ):
-            raise RuntimeError("C51 interpolated projection changes expectation")
-        if not torch.isclose(projected[2, -1], torch.tensor(1.0, device=device)):
-            raise RuntimeError("C51 upper-bound projection is incorrect")
-        if lower_clip.any() or not torch.isclose(
-            upper_clip[2], torch.tensor(1.0, device=device)
-        ):
-            raise RuntimeError("C51 clipping diagnostics are incorrect")
     update = learner.update(batch)
     prioritized_batch = prioritized_replay.sample(batch_size, rng, beta=0.4)
     prioritized_update = learner.update(prioritized_batch)
@@ -1296,7 +1107,6 @@ def run_self_check(
     ):
         raise RuntimeError("masked network inference selected an illegal action")
     return {
-        "algorithm": config.algorithm,
         "games": len(completed),
         "transitions_in_replay": replay.size,
         "observation_dim": OBSERVATION_DIM,
@@ -1306,16 +1116,4 @@ def run_self_check(
         "loss": update.metrics["loss"],
         "prioritized_loss": prioritized_update.metrics["loss"],
         "feature_groups": len(observation_feature_counts()),
-        **(
-            {
-                "atom_count": config.atom_count,
-                "value_min": config.value_min,
-                "value_max": config.value_max,
-                "support_upper_clip_mass": update.metrics[
-                    "support_upper_clip_mass"
-                ],
-            }
-            if config.algorithm == "c51"
-            else {}
-        ),
     }

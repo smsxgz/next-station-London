@@ -9,7 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from engine import GameSession
+from engine_cpp import GameSession
 from solver.RL import SelectiveDepth3Policy
 
 from .records import (

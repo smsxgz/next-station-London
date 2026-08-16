@@ -1,13 +1,13 @@
-"""Public API for the standalone Next Station: London game engine."""
+"""Public Python API for the C++ Next Station: London engine."""
 
-from .game import (
+from .london import COLORS, LONDON, SYMBOLS, Edge, LondonMap, Station
+from .types import (
     Action,
     Card,
     DECK,
     DECK_BY_ID,
     FinalScore,
     GameError,
-    GameSession,
     INTERCHANGE_POINTS,
     LineScore,
     LineState,
@@ -20,9 +20,9 @@ from .game import (
     PENCIL_POWERS,
     SHARED_OBJECTIVES,
     TOURIST_TRACK,
-    line_score,
 )
-from .london import COLORS, LONDON, SYMBOLS, Edge, LondonMap, Station
+
+from .session import GameSession, native_available, native_library_path
 
 __all__ = [
     "Action",
@@ -50,5 +50,6 @@ __all__ = [
     "Station",
     "SYMBOLS",
     "TOURIST_TRACK",
-    "line_score",
+    "native_available",
+    "native_library_path",
 ]

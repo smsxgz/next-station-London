@@ -11,14 +11,11 @@ import numpy as np
 from numpy.typing import NDArray
 import torch
 
-from engine import (
+from engine_cpp import (
     COLORS,
     DECK_BY_ID,
-    INTERCHANGE_POINTS,
-    LineState,
     LONDON,
     SYMBOLS,
-    TOURIST_TRACK,
     Action,
     GameError,
     GameSession,
@@ -92,112 +89,42 @@ def _decode_afterstate(observation: NDArray[np.uint8]) -> GameSession:
     if _one_hot_index(observation, ACTIVE_COLOR) != COLORS.index(order[round_index]):
         raise ValueError("afterstate active color disagrees with color order")
 
-    # The constructor supplies all static map metadata and departure stations.
-    # Everything below is public state reconstructed from the packed features.
-    game = GameSession(order=order, seed=0)
-    game.round_index = round_index
-    game._used_power_mask = 0
-    game._double_section_pending = False
-    game._double_target_symbol = None
-    game._turn_actions = ()
-    game.pending = None
-    game.status = "playing"
-    game.last_move = None
-    game.move_history = []
-    game.round_scores = []
-    game._record_history = False
-
-    lines: dict[str, LineState] = {}
-    for color_index, color in enumerate(COLORS):
+    line_edge_masks: list[int] = []
+    line_station_masks: list[int] = []
+    for color_index, _color in enumerate(COLORS):
         edge_start = LINE_EDGES.start + color_index * NUM_EDGES
         station_start = LINE_STATIONS.start + color_index * NUM_STATIONS
-        edges = set(int(item) for item in np.flatnonzero(
+        edge_ids = np.flatnonzero(
             observation[edge_start : edge_start + NUM_EDGES]
-        ))
-        stations = set(int(item) for item in np.flatnonzero(
-            observation[station_start : station_start + NUM_STATIONS]
-        ))
-        start = game.lines[color].start
-        if start not in stations:
-            raise ValueError("afterstate is missing a departure station")
-        lines[color] = LineState(color=color, start=start, stations=stations, edges=edges)
-    metrics_type = type(next(iter(game._line_metrics.values())))
-    game.lines = lines
-
-    game.board_edges = set().union(*(line.edges for line in lines.values()))
-    game._board_mask_value = sum(1 << edge_id for edge_id in game.board_edges)
-    game._line_metrics = {}
-    game._route_total = 0
-    game._thames_total = 0
-    game._network_station_mask = 0
-    game._network_district_mask = 0
-    game._partial_tourist_visits = 0
-    for color, line in lines.items():
-        district_mask = 0
-        station_counts = [0] * game._district_count
-        tourist_visits = 0
-        for station_id in line.stations:
-            district = game._station_district_indices[station_id]
-            district_mask |= 1 << district
-            station_counts[district] += 1
-            station = game.map.station(station_id)
-            tourist_visits += int(station.tourist)
-            game._network_station_mask |= 1 << station_id
-        for edge_id in line.edges:
-            district_mask |= game._edge_district_masks[edge_id]
-            edge = game.map.edge(edge_id)
-            game._thames_total += int(edge.crosses_thames) * 2
-        max_stations = max(station_counts, default=0)
-        route = district_mask.bit_count() * max_stations
-        game._line_metrics[color] = metrics_type(
-            district_mask=district_mask,
-            station_counts=station_counts,
-            max_stations=max_stations,
-            route=route,
-            thames_crossings=sum(
-                int(game.map.edge(edge_id).crosses_thames) for edge_id in line.edges
-            ),
-            tourist_visits=tourist_visits,
         )
-        game._route_total += route
-        game._partial_tourist_visits += tourist_visits
-        game._network_district_mask |= district_mask
-
-    game._partial_tourist_points = TOURIST_TRACK[
-        min(game._partial_tourist_visits, len(TOURIST_TRACK) - 1)
-    ]
-    game._lines_per_station = [0] * len(game.map.stations)
-    game._interchange_counts = [0] * (len(COLORS) + 1)
-    for line in lines.values():
-        for station_id in line.stations:
-            game._lines_per_station[station_id] += 1
-    for count in game._lines_per_station:
-        game._interchange_counts[count] += 1
-    game._interchange_total = sum(
-        count * INTERCHANGE_POINTS.get(lines_count, 0)
-        for lines_count, count in enumerate(game._interchange_counts)
-    )
-    game._interchange_station_total = sum(game._interchange_counts[2:])
-    game._completed_objective_mask = 0
-    game.tourist_visits = sum(
-        game._line_metrics[color].tourist_visits
-        for color in order[:round_index]
-    )
+        station_ids = np.flatnonzero(
+            observation[station_start : station_start + NUM_STATIONS]
+        )
+        line_edge_masks.append(sum(1 << int(item) for item in edge_ids))
+        line_station_masks.append(sum(1 << int(item) for item in station_ids))
 
     current_ids = tuple(int(item) for item in np.flatnonzero(observation[CURRENT_CARDS]))
     remaining_ids = set(int(item) for item in np.flatnonzero(observation[REMAINING_CARDS]))
     if not current_ids or set(current_ids) & remaining_ids:
         raise ValueError("afterstate card features are inconsistent")
-    game.remaining = remaining_ids | set(current_ids)
-    game._remaining_mask = sum(1 << card_id for card_id in game.remaining)
-    game.draw_count = _one_hot_index(observation, DRAW_COUNT) - len(current_ids)
-    game.underground_count = _one_hot_index(observation, UNDERGROUND_COUNT) - sum(
+    remaining_mask = sum(
+        1 << card_id for card_id in remaining_ids | set(current_ids)
+    )
+    draw_count = _one_hot_index(observation, DRAW_COUNT) - len(current_ids)
+    underground_count = _one_hot_index(observation, UNDERGROUND_COUNT) - sum(
         int(DECK_BY_ID[card_id].underground) for card_id in current_ids
     )
-    if game.draw_count < 0 or game.underground_count < 0:
+    if draw_count < 0 or underground_count < 0:
         raise ValueError("afterstate card counters are inconsistent")
-    game.deck_order = []
-    return game
+    return GameSession.from_public_state(
+        order=order,
+        line_station_masks=tuple(line_station_masks),
+        line_edge_masks=tuple(line_edge_masks),
+        remaining_mask=remaining_mask,
+        round_index=round_index,
+        underground_count=underground_count,
+        draw_count=draw_count,
+    )
 
 
 def _legal_mask(

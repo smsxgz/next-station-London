@@ -10,7 +10,7 @@ from time import perf_counter
 
 import numpy as np
 
-from engine import Action, GameError, GameSession
+from engine_cpp import Action, GameError, GameSession
 
 from ..scoring import position_score
 from ..state import sample_public_event

@@ -6,7 +6,7 @@ import random
 from itertools import permutations
 from typing import Iterator
 
-from engine import (
+from engine_cpp import (
     COLORS,
     DECK_BY_ID,
     PENCIL_POWERS,

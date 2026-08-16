@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 import random
 from time import perf_counter
@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 import torch
 from torch import Tensor
 
-from engine import Action, GameError, GameSession
+from engine_cpp import Action, GameError, GameSession
 
 from ...state import public_state_key, sample_public_event
 from ..codec import (

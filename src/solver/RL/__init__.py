@@ -18,7 +18,6 @@ from .dqn import (
     NetworkSpec,
     QNetwork,
 )
-from .c51 import CategoricalQNetwork, project_distribution
 from .environment import (
     DecisionEnv,
     EpisodeResult,
@@ -69,7 +68,6 @@ from .selective_depth3 import (
 __all__ = [
     "ACTION_COUNT",
     "ActionValueNetwork",
-    "CategoricalQNetwork",
     "DQNDecision",
     "DEFAULT_DQN_MCTS_SIMULATIONS",
     "DQNMCTSActionEstimate",
@@ -115,6 +113,5 @@ __all__ = [
     "encode_decision_into",
     "encode_observation",
     "encode_observation_into",
-    "project_distribution",
     "pack_teacher_sample",
 ]

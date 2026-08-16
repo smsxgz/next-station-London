@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from engine import (
+from engine_cpp import (
     Action,
     GameError,
     GameSession,

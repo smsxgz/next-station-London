@@ -78,9 +78,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     check = commands.add_parser("check", help="run in-memory correctness checks")
     check.add_argument("--games", type=_positive_int, default=16)
-    check.add_argument(
-        "--algorithm", choices=("dqn", "c51"), default="dqn"
-    )
     _add_device(check)
 
     benchmark = commands.add_parser(
@@ -100,9 +97,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--run-dir", type=Path, default=Path("artifacts/dqn/uniform")
     )
     training.add_argument("--resume", action="store_true")
-    training.add_argument(
-        "--algorithm", choices=("dqn", "c51"), default="dqn"
-    )
     training.add_argument("--num-envs", type=_positive_int, default=128)
     training.add_argument("--total-transitions", type=_positive_int)
     training.add_argument("--n-steps", type=_positive_int, default=1)
@@ -172,7 +166,6 @@ def _fresh_config(args: argparse.Namespace) -> TrainConfig:
     )
     return TrainConfig(
         seed=seed,
-        algorithm=args.algorithm,
         num_envs=args.num_envs,
         total_transitions=args.total_transitions or 10_000_000,
         n_steps=args.n_steps,
@@ -210,7 +203,6 @@ def main() -> None:
         result = run_self_check(
             games=args.games,
             device_name=args.device,
-            algorithm=args.algorithm,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
         return

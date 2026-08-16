@@ -1,6 +1,6 @@
 # Next Station: London solver
 
-这是一个面向算法研究的 Python 项目，实现《Next Station: London》的游戏引擎和若干决策策略。
+这是一个面向算法研究的项目，以 C++ 实现《Next Station: London》游戏引擎，并用 Python 实现决策策略和训练流程。
 
 本仓库只包含核心引擎、solver 和实验代码。`src/web/` 与 `src/helper/` 仅保留在本地开发工作区，不纳入版本控制，也不会随仓库同步。
 
@@ -12,7 +12,7 @@
 - Tourist、Thames 和 Interchange 正常计分；
 - pass 始终合法；
 - 基础规则默认关闭 Shared Objectives 和 Pencil Powers；
-- engine、传统 solver 和实验入口可独立开启任一进阶模块，或同时开启两者。
+- C++ engine、传统 solver 和实验入口可独立开启任一进阶模块，或同时开启两者。
 
 官方规则及地图资料保存在 `rule/`。
 
@@ -20,7 +20,7 @@
 
 ```text
 src/
-  engine/       # 地图、规则、状态转移和计分
+  engine_cpp/   # C++ 游戏状态、随机抽牌、规则、计分与薄 Python 接口
   solver/       # 公开状态上的搜索与决策算法
     RL/         # batched env、replay、DQN 和训练入口
   experiments/  # 完整对局、并行实验、JSONL 和统计比较
@@ -28,7 +28,24 @@ benchmark_results/  # 已完成实验的数据与摘要
 rule/               # 官方规则和地图资料
 ```
 
-依赖方向保持单向：`solver -> engine`、`experiments -> solver + engine`。Engine 不知道任何算法，solver 也不处理进程、文件或整批实验。
+依赖方向保持单向：`solver -> engine_cpp`、`experiments -> solver + engine_cpp`。C++ engine 不知道任何算法，solver 也不处理进程、文件或整批实验。
+
+## C++ Engine
+
+solver、实验入口和 RL collector 默认使用 C++ 后端。Windows 下从 x64 Visual
+Studio developer prompt 构建：
+
+```powershell
+cmake -S src/engine_cpp -B build/engine-cpp `
+  -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/engine-cpp --parallel
+build/engine-cpp/next_station_engine_check.exe
+```
+
+Python 默认从 `build/engine-cpp` 加载动态库；也可以通过
+`NEXT_STATION_NATIVE_LIBRARY` 指定兼容的 Release library。C++ RNG 对同一个
+seed 可复现。旧 Python 规则引擎已经删除；其 seed 与 C++ 后端不对应同一组
+隐藏牌序，因此旧 benchmark 需要在新后端上重跑。
 
 ## 本地工具
 
@@ -52,7 +69,7 @@ Seed 只控制真实对局的颜色顺序和洗牌。Random player 的动作、G
 - `DepthKPolicy`：使用统一递归枚举未来 `k` 次公开翻牌及其概率，不附加叶节点估值。
 - `Depth2Policy`：与 `DepthKPolicy(2)` 数学等价的显式特化实现，避免通用递归在最常用深度上的额外开销。
 - `MCTSPolicy`：公共状态上的 chance-sampled UCT；每个节点包含 pass，未知抽牌只从当前剩余牌中采样，首次到达的状态使用确定性 Greedy 完成对局。
-- `solver.RL`：London 基础规则固定动作空间上的 Masked Double DQN、C51 和批量 DQN-rollout MCTS；只编码公开信息，不读取隐藏牌序，当前不支持进阶模块。
+- `solver.RL`：London 基础规则固定动作空间上的 Masked Double DQN 和批量 DQN-rollout MCTS；只编码公开信息，不读取隐藏牌序，当前不支持进阶模块。
 
 Shared Objectives 与 Pencil Powers 是两个独立开关。共同目标在首次达成时产生与终局 `+10` 完全等价的即时奖励；Circle 只把所圈车站在当前线路对应区域的站数中额外计一次，不会制造真实站点或帮助共同目标。Double Section 的第二段作为同一次翻牌下的后续决策，不额外消耗 Lookahead 深度。
 
@@ -64,7 +81,7 @@ MCTSPolicy(simulations=5120, exploration=22.5)
 
 ## 强化学习
 
-强化学习依赖是可选的，不会影响 engine、传统 solver 或网页：
+强化学习依赖是可选的，不会影响 C++ engine、传统 solver 或网页：
 
 ```powershell
 python -m pip install -e ".[rl]"
@@ -82,18 +99,7 @@ python -m solver.RL benchmark-env --env-counts 16 32 64 128 --device cuda
 ```powershell
 python -m solver.RL train `
   --run-dir artifacts/dqn/fullq_n1_uniform `
-  --algorithm dqn `
   --n-steps 1 `
-  --eval-seeds-from benchmark_results/current_200/manifest.json `
-  --device cuda
-```
-
-C51 使用 51 个 atoms 和归一化 support `[0, 20]`，对应实际得分 `[0, 200]`：
-
-```powershell
-python -m solver.RL train `
-  --run-dir artifacts/dqn/c51_n1_uniform `
-  --algorithm c51 `
   --eval-seeds-from benchmark_results/current_200/manifest.json `
   --device cuda
 ```
@@ -125,8 +131,6 @@ Q(s, a) <- r + gamma * Q_target(s', argmax_a Q_online(s', a))
 ```
 
 即时奖励只作为 transition 的 `r`，不参与动作分数的额外拼接。`reward_scale=10` 仅用于数值缩放；网络仍然学习完整 Q，而不是未来价值残差。
-
-C51 对每个动作维护 51 维回报分布，以分布期望选择动作，并使用在线网络选择下一个动作、目标网络提供其分布。Bellman target 会投影回固定 support；训练日志记录落到 support 外的概率质量。
 
 ### DQN-MCTS
 
@@ -163,14 +167,11 @@ python -m experiments.dqn_mcts `
 子树复用之前的实现，耗时 1:53:57，平均物理推理 batch 为 `17.4`。新实现
 使用不同的 policy 名称写结果，避免与旧 JSONL 混合。
 
-RTX 4060 Ti 上的 10M-transition、1-step、uniform replay 实验如下；两种算法均在现有 200 seeds 上选择并评估 checkpoint：
+RTX 4060 Ti 上的 10M-transition、1-step、uniform replay 实验如下；checkpoint 在现有 200 seeds 上选择并评估：
 
 | Algorithm | Best step | Best | Final | Time |
 | --- | ---: | ---: | ---: | ---: |
 | Full-Q Double DQN | 9.0M | `144.64 +/- 1.07` | `144.12 +/- 1.08` | 31.4 min |
-| C51 | 10.0M | `143.94 +/- 1.09` | `143.94 +/- 1.09` | 36.7 min |
-
-C51 最终中位数为 `144`，范围 `104..186`。它的最佳均分比标量 DQN 低 `0.70`，比 Lookahead-2 高 `5.95`，比 Lookahead-4 低 `4.46`，比默认 MCTS 低 `13.11`。这些是整体均分比较，不是逐 seed 配对分析；200 局同时参与了 checkpoint 选择，因此属于验证结果，不是独立的最终测试结果。
 
 ## 实验
 

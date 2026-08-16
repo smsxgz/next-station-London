@@ -10,7 +10,6 @@ from time import perf_counter
 import numpy as np
 import torch
 
-from ..codec import ACTION_COUNT
 from ..environment import DecisionEnv
 from .network import NetworkSpec, PolicyValueNetwork, parameter_count
 from .replay import AlphaZeroReplay, ReplayRecord

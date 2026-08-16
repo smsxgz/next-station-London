@@ -9,7 +9,7 @@ from typing import Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from engine import GameError, GameSession
+from engine_cpp import GameError, GameSession
 
 from ..scoring import position_score
 from .codec import (
