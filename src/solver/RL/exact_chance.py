@@ -14,18 +14,17 @@ import torch
 from engine_cpp import (
     COLORS,
     DECK_BY_ID,
-    LONDON,
     SYMBOLS,
     Action,
     GameError,
     GameSession,
+    legal_edge_mask,
 )
 
 from ..state import public_event_successors, public_state_key
 from .codec import (
     ACTION_COUNT,
     ACTIVE_COLOR,
-    ACTIVE_LEAVES,
     COLOR_ORDER,
     CURRENT_CARDS,
     DRAW_COUNT,
@@ -61,18 +60,11 @@ def _one_hot_index(observation: NDArray[np.uint8], span: slice) -> int:
     return int(indices[0])
 
 
-def _decode_afterstate(observation: NDArray[np.uint8]) -> GameSession:
-    """Rebuild a base-rule public state immediately before its next draw.
-
-    Replay stores the decision state *after* the environment has drawn the
-    next card.  Exact depth-2 targets need the public afterstate before that
-    draw so that both chance events can be expanded with the engine's own
-    transition code.  The hidden deck order is intentionally not restored.
-    """
-
+def _decode_position(
+    observation: NDArray[np.uint8],
+) -> tuple[tuple[str, ...], tuple[int, ...], tuple[int, ...], int]:
     if observation.shape != (OBSERVATION_DIM,):
         raise ValueError("afterstate observation has an incompatible shape")
-
     order = tuple(
         COLORS[
             _one_hot_index(
@@ -88,10 +80,9 @@ def _decode_afterstate(observation: NDArray[np.uint8]) -> GameSession:
     round_index = _one_hot_index(observation, ROUND_INDEX)
     if _one_hot_index(observation, ACTIVE_COLOR) != COLORS.index(order[round_index]):
         raise ValueError("afterstate active color disagrees with color order")
-
     line_edge_masks: list[int] = []
     line_station_masks: list[int] = []
-    for color_index, _color in enumerate(COLORS):
+    for color_index in range(len(COLORS)):
         edge_start = LINE_EDGES.start + color_index * NUM_EDGES
         station_start = LINE_STATIONS.start + color_index * NUM_STATIONS
         edge_ids = np.flatnonzero(
@@ -102,7 +93,21 @@ def _decode_afterstate(observation: NDArray[np.uint8]) -> GameSession:
         )
         line_edge_masks.append(sum(1 << int(item) for item in edge_ids))
         line_station_masks.append(sum(1 << int(item) for item in station_ids))
+    return order, tuple(line_station_masks), tuple(line_edge_masks), round_index
 
+
+def _decode_afterstate(observation: NDArray[np.uint8]) -> GameSession:
+    """Rebuild a base-rule public state immediately before its next draw.
+
+    Replay stores the decision state *after* the environment has drawn the
+    next card.  Exact depth-2 targets need the public afterstate before that
+    draw so that both chance events can be expanded with the engine's own
+    transition code.  The hidden deck order is intentionally not restored.
+    """
+
+    order, line_station_masks, line_edge_masks, round_index = _decode_position(
+        observation
+    )
     current_ids = tuple(int(item) for item in np.flatnonzero(observation[CURRENT_CARDS]))
     remaining_ids = set(int(item) for item in np.flatnonzero(observation[REMAINING_CARDS]))
     if not current_ids or set(current_ids) & remaining_ids:
@@ -136,31 +141,27 @@ def _legal_mask(
 ) -> NDArray[np.bool_]:
     mask = np.zeros(ACTION_COUNT, dtype=np.bool_)
     mask[PASS_ACTION_INDEX] = True
-
-    color_index = _one_hot_index(observation, ACTIVE_COLOR)
-    station_start = LINE_STATIONS.start + color_index * NUM_STATIONS
-    line_stations = observation[station_start : station_start + NUM_STATIONS]
-    sources = (
-        np.flatnonzero(line_stations)
-        if source_any
-        else np.flatnonzero(observation[ACTIVE_LEAVES])
+    order, line_station_masks, line_edge_masks, round_index = _decode_position(
+        observation
     )
-    line_edges = observation[LINE_EDGES].reshape(len(COLORS), NUM_EDGES)
-    occupied_ids = np.flatnonzero(line_edges.any(axis=0))
-    board_mask = sum(1 << int(edge_id) for edge_id in occupied_ids)
-
-    for source in sources:
-        for edge_id, target in LONDON.oriented_adjacency[int(source)]:
-            if board_mask & (1 << edge_id):
-                continue
-            if LONDON.conflict_masks[edge_id] & board_mask:
-                continue
-            if line_stations[target]:
-                continue
-            symbol = LONDON.stations[target].symbol
-            if symbol != "central" and not wild and symbol != target_symbol:
-                continue
-            mask[edge_id] = True
+    remaining_mask = sum(
+        1 << int(card_id) for card_id in np.flatnonzero(observation[REMAINING_CARDS])
+    )
+    edge_mask = legal_edge_mask(
+        order=order,
+        line_station_masks=tuple(line_station_masks),
+        line_edge_masks=tuple(line_edge_masks),
+        remaining_mask=remaining_mask,
+        round_index=round_index,
+        underground_count=_one_hot_index(observation, UNDERGROUND_COUNT),
+        draw_count=_one_hot_index(observation, DRAW_COUNT),
+        target_symbol=target_symbol,
+        wild=wild,
+        source_any=source_any,
+    )
+    mask[:NUM_EDGES] = tuple(
+        bool(edge_mask & (1 << edge_id)) for edge_id in range(NUM_EDGES)
+    )
     return mask
 
 

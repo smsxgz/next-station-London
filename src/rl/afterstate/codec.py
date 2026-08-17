@@ -16,13 +16,14 @@ from typing import Iterator
 import numpy as np
 from numpy.typing import NDArray
 
-from engine_cpp import COLORS, DECK, TOURIST_TRACK, Action, GameError, GameSession
+from engine_cpp import COLORS, DECK, Action, GameError, GameSession
 from solver.state import public_event_successors
 
 NUM_COLORS = len(COLORS)
 NUM_EDGES = 155
 NUM_STATIONS = 53
 NUM_CARDS = len(DECK)
+_TOURIST_LEVEL_COUNT = 11
 ACTION_COUNT = NUM_EDGES + 1
 PASS_ACTION_INDEX = NUM_EDGES
 AFTERSTATE_SCHEMA_VERSION = 1
@@ -162,7 +163,7 @@ _FEATURE_GROUPS = {
     "draw_count": NUM_CARDS + 1,
     "terminal": 1,
     "line_score_features": NUM_COLORS * (13 + 13 + 5),
-    "global_score_features": 4 + len(TOURIST_TRACK) + 5 + 1 + 1 + 1 + 4 + 4,
+    "global_score_features": 4 + _TOURIST_LEVEL_COUNT + 5 + 1 + 1 + 1 + 4 + 4,
 }
 OBSERVATION_DIM = sum(_FEATURE_GROUPS.values())
 FEATURE_SCHEMA = {

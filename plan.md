@@ -1,56 +1,58 @@
-# Current Experiment: 1024-Seed Afterstate Checkpoint Comparison
+# Evaluation Plan
 
-## Goal
+## Seed Sets
 
-Measure the raw and exact-backup performance of every distinct retained
-checkpoint on one shared, previously unused set of 1,024 game seeds. No
-training or checkpoint selection is performed in this experiment.
+- `benchmark_results/current_200/manifest.json` is the fixed development set.
+- `benchmark_results/large_4096/manifest.json` is the fixed confirmation set.
+- The 4,096 seeds are unique and disjoint from `current_200`.
+- Every policy in a comparison uses the same ordered seed list.
 
-## Seeds
+## Search Baselines
 
-- Manifest: `benchmark_results/afterstate_checkpoints_new_1024/seeds.json`.
-- Generator seed: `0xA57E1024`.
-- All 1,024 seeds are unique.
-- They are disjoint from every `game_seeds` list in the existing benchmark
-  manifests, including `current_200` and the previous independent 200.
-- Every checkpoint and inference mode uses the same ordered seeds.
+Run on both seed sets:
 
-## Checkpoints
+- random
+- greedy
+- lookahead-2, lookahead-3, lookahead-4
+- MCTS-5120
 
-1. Original scalar 9M best:
-   `artifacts/afterstate/value_10m_cpp/best.pt`.
-2. Original scalar 10M latest and decision-group source:
-   `artifacts/afterstate/value_10m_cpp/latest.pt`.
-3. Decision-group 5.75M best raw:
-   `artifacts/afterstate/value_group_5m_workspace_cpp/best_raw.pt`.
-4. Decision-group 7M best backup:
-   `artifacts/afterstate/value_group_5m_workspace_cpp/best.pt`.
-5. Decision-group 9.75M best backup:
-   `artifacts/afterstate/value_group_10m_workspace_cpp/best.pt`.
-6. Decision-group 10M best raw:
-   `artifacts/afterstate/value_group_10m_workspace_cpp/best_raw.pt`.
+## Full-Q
 
-The original decision-group 5M checkpoint no longer exists and is therefore
-not included. Duplicate `latest.pt` files with identical weights are omitted.
+- current_200: raw DQN, exact chance depth-1, and exact chance depth-2.
+- large_4096: raw DQN and exact chance depth-1.
+- The large-sample depth-2 run is intentionally omitted because of its
+  disproportionate runtime.
 
-## Inference Modes
+Checkpoint:
+`artifacts/dqn/fullq_n1_uniform_10m/best.pt`.
 
-For each checkpoint evaluate:
+## Afterstate
 
-1. `greedy`: raw `argmax_a [r_a / 10 + W_online(o_a)]`.
-2. `online-online`: one exact Bellman improvement with online selection and
-   online continuation evaluation. This is the main deployed policy.
-3. `online-target`: the same improvement with target continuation evaluation,
-   retained only as a target-lag diagnostic.
+Evaluate `greedy` (raw), `online-online` (main exact backup), and
+`online-target` (target-lag diagnostic) for:
 
-Use CUDA, 64 parallel environments, inference batches of 8,192, and 10 native
-C++ expansion threads.
+- group-5p75m
+- group-7m
+- group-9p75m
+- group-10m
+- scalar-9m
+- scalar-10m
 
-## Output
+The group checkpoint paths and SHA-256 values are recorded in each output
+manifest. All afterstate evaluations use 64 environments and an inference
+batch size of 8,192.
 
-- Directory: `benchmark_results/afterstate_checkpoints_new_1024`.
-- Save every ordered score vector, checkpoint SHA-256, summary statistics,
-  action agreement, and regret.
-- Report means and standard errors for all checkpoints and main modes.
-- Use paired score differences on the shared seeds when comparing checkpoints;
-  do not infer progress from unpaired standard errors alone.
+## Outputs
+
+- `benchmark_results/current_200/summary.md`
+- `benchmark_results/current_200/games/`
+- `benchmark_results/large_4096/summary.md`
+- `benchmark_results/large_4096/games/`
+
+Each root `manifest.json` defines the seed set and records checkpoint metadata.
+`benchmark_results/summarize.py` discovers result files under `games/`, refreshes
+the manifest index, and rebuilds the unified summary.
+
+Report means, standard errors, and paired score differences. The benchmark
+solver policies retain their existing unseeded agent-randomness semantics;
+game seeds remain fixed and shared within each comparison.

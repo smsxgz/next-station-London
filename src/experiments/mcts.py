@@ -14,6 +14,7 @@ from typing import Any
 from engine_cpp import GameSession
 from solver import (
     DEFAULT_MCTS_EXPLORATION,
+    DEFAULT_MCTS_SIMPLE_RANDOM_PASS_PROBABILITY,
     DEFAULT_MCTS_SIMULATIONS,
     MCTSPolicy,
 )
@@ -25,6 +26,9 @@ from .records import (
     load_jsonl,
     summarize,
 )
+
+
+MCTS_ROLLOUT_POLICIES = ("greedy", "lookahead-2", "simple-random")
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,11 +58,16 @@ def policy_name(
     simulations: int,
     exploration: float,
     *,
+    rollout_policy: str = "greedy",
     shared_objectives: bool = False,
     pencil_powers: bool = False,
 ) -> str:
+    if rollout_policy not in MCTS_ROLLOUT_POLICIES:
+        raise ValueError(f"unknown MCTS rollout policy: {rollout_policy}")
     exploration_label = f"{exploration:g}".replace(".", "p")
     name = f"mcts-uct-{simulations}-c{exploration_label}"
+    if rollout_policy != "greedy":
+        name += f"-rollout-{rollout_policy}"
     if shared_objectives and pencil_powers:
         return f"{name}-advanced"
     if shared_objectives:
@@ -69,15 +78,34 @@ def policy_name(
 
 
 def run_mcts_game(
-    task: tuple[int, int, int, float, bool, bool],
+    task: tuple[int, int, int, float, bool, bool]
+    | tuple[int, int, int, float, bool, bool, str],
 ) -> CompletedGame:
-    index, seed, simulations, exploration, objectives, powers = task
+    if len(task) == 6:
+        index, seed, simulations, exploration, objectives, powers = task
+        rollout_policy = "greedy"
+    elif len(task) == 7:
+        (
+            index,
+            seed,
+            simulations,
+            exploration,
+            objectives,
+            powers,
+            rollout_policy,
+        ) = task
+    else:
+        raise ValueError("MCTS task has an invalid field count")
     game = GameSession(
         seed=seed,
         shared_objectives_enabled=objectives,
         pencil_powers_enabled=powers,
     )
-    policy = MCTSPolicy(simulations, exploration=exploration)
+    policy = MCTSPolicy(
+        simulations,
+        exploration=exploration,
+        rollout_policy=rollout_policy,
+    )
     sections = passes = strategic_passes = candidate_actions = 0
     second_section_stops = powered_sections = 0
     selected_errors: list[float] = []
@@ -125,6 +153,7 @@ def run_mcts_game(
     name = policy_name(
         simulations,
         exploration,
+        rollout_policy=rollout_policy,
         shared_objectives=objectives,
         pencil_powers=powers,
     )
@@ -145,7 +174,16 @@ def run_mcts_game(
             "family": "chance-sampled-uct",
             "simulations_per_decision": simulations,
             "exploration": exploration,
-            "rollout_policy": "greedy",
+            "rollout_policy": rollout_policy,
+            **(
+                {
+                    "rollout_pass_probability": (
+                        DEFAULT_MCTS_SIMPLE_RANDOM_PASS_PROBABILITY
+                    )
+                }
+                if rollout_policy == "simple-random"
+                else {}
+            ),
             "shared_objectives": objectives,
             "pencil_powers": powers,
             "total_simulations": simulations * len(selected_errors),
@@ -180,6 +218,7 @@ def _validate_existing(
     seeds: list[int],
     simulations: int,
     exploration: float,
+    rollout_policy: str,
     objectives: bool,
     powers: bool,
 ) -> None:
@@ -188,16 +227,27 @@ def _validate_existing(
         if record is None:
             continue
         algorithm = record.get("algorithm", {})
+        pass_probability = algorithm.get("rollout_pass_probability", 0.0)
         if (
             record.get("policy")
             != policy_name(
                 simulations,
                 exploration,
+                rollout_policy=rollout_policy,
                 shared_objectives=objectives,
                 pencil_powers=powers,
             )
             or algorithm.get("simulations_per_decision") != simulations
-            or algorithm.get("rollout_policy", "greedy") != "greedy"
+            or algorithm.get("rollout_policy", "greedy") != rollout_policy
+            or (
+                rollout_policy == "simple-random"
+                and not math.isclose(
+                    float(pass_probability),
+                    DEFAULT_MCTS_SIMPLE_RANDOM_PASS_PROBABILITY,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            )
             or algorithm.get("shared_objectives", False) is not objectives
             or algorithm.get("pencil_powers", False) is not powers
             or not math.isclose(
@@ -214,7 +264,7 @@ def _validate_existing(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Evaluate chance-sampled UCT with Greedy rollouts"
+        description="Evaluate chance-sampled UCT with a native rollout policy"
     )
     parser.add_argument("--games", type=_positive_int)
     parser.add_argument(
@@ -229,6 +279,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--exploration", type=_nonnegative_float, default=DEFAULT_MCTS_EXPLORATION
+    )
+    parser.add_argument(
+        "--rollout-policy",
+        choices=MCTS_ROLLOUT_POLICIES,
+        default="greedy",
     )
     parser.add_argument("--workers", type=_positive_int, default=1)
     parser.add_argument(
@@ -260,6 +315,7 @@ def main() -> None:
     name = policy_name(
         args.simulations,
         args.exploration,
+        rollout_policy=args.rollout_policy,
         shared_objectives=objectives,
         pencil_powers=powers,
     )
@@ -276,6 +332,7 @@ def main() -> None:
         seeds,
         args.simulations,
         args.exploration,
+        args.rollout_policy,
         objectives,
         powers,
     )
@@ -287,6 +344,7 @@ def main() -> None:
             args.exploration,
             objectives,
             powers,
+            args.rollout_policy,
         )
         for index, seed in enumerate(seeds)
         if seed not in records

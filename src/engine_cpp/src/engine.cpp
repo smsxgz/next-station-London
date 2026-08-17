@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace next_station {
 namespace native {
@@ -83,20 +84,6 @@ const RawStation kRawStations[kStationCount] = {
     {5, 9, kTriangle, false, -1},
     {7, 9, kCircle, false, -1},
     {9, 9, kSquare, false, -1},
-};
-
-const Card kDeck[kCardCount] = {
-    {0, kCircle, true, false},
-    {1, kTriangle, true, false},
-    {2, kSquare, true, false},
-    {3, kPentagon, true, false},
-    {4, kWild, true, false},
-    {5, kCircle, false, false},
-    {6, kTriangle, false, false},
-    {7, kSquare, false, false},
-    {8, kPentagon, false, false},
-    {9, kWild, false, false},
-    {10, kWild, false, true},
 };
 
 std::string district_name(int x, int y) {
@@ -291,14 +278,14 @@ Map build_map() {
         district_set.insert(temporary_edges[i].districts.begin(),
                             temporary_edges[i].districts.end());
     }
-    std::vector<std::string> district_names(district_set.begin(), district_set.end());
+    result.district_names.assign(district_set.begin(), district_set.end());
     std::map<std::string, int> district_indices;
-    for (std::size_t i = 0; i < district_names.size(); ++i) {
-        district_indices[district_names[i]] = static_cast<int>(i);
+    for (std::size_t i = 0; i < result.district_names.size(); ++i) {
+        district_indices[result.district_names[i]] = static_cast<int>(i);
     }
-    result.district_count = static_cast<int>(district_names.size());
+    result.district_count = static_cast<int>(result.district_names.size());
     if (result.district_count != kDistrictCount) {
-        throw std::runtime_error("London map district count differs from Python engine");
+        throw std::runtime_error("London map has an unexpected district count");
     }
     for (int id = 0; id < kStationCount; ++id) {
         const int district = district_indices[station_district_names[id]];
@@ -328,7 +315,7 @@ Map build_map() {
         result.edge_district_masks[id] = mask;
     }
     if (result.edges.size() != kEdgeCount) {
-        throw std::runtime_error("London map edge count differs from Python engine");
+        throw std::runtime_error("London map has an unexpected edge count");
     }
     for (std::size_t i = 0; i < result.edges.size(); ++i) {
         const Edge& edge = result.edges[i];
@@ -550,13 +537,13 @@ GameState::GameState(const GameOptions& options)
       double_section_pending_(false), double_target_symbol_(kWild),
       remaining_mask_(0), round_index_(0), underground_count_(0),
       draw_count_(0), status_(Status::Playing), has_pending_(false),
-      pending_(), rng_(options.seed), deck_order_(), public_copy_(false) {
+      pending_(), hidden_(std::make_shared<HiddenState>(options.seed)) {
     if (options.has_order) {
         order_ = options.order;
     } else {
         for (int i = kColorCount - 1; i > 0; --i) {
             std::uniform_int_distribution<int> distribution(0, i);
-            const int other = distribution(rng_);
+            const int other = distribution(hidden_->rng);
             std::swap(order_[i], order_[other]);
         }
     }
@@ -636,6 +623,11 @@ void GameState::validate_advanced_config() const {
 }
 
 void GameState::reset() {
+    if (!hidden_) {
+        hidden_ = std::make_shared<HiddenState>(0);
+    } else {
+        ensure_unique_hidden();
+    }
     validate_order();
     validate_advanced_config();
     round_index_ = 0;
@@ -708,31 +700,41 @@ void GameState::reset() {
             network_station_mask_, network_district_mask_,
             interchange_station_total_, 0)
         & shared_objective_mask_);
-    public_copy_ = false;
     start_round();
+}
+
+void GameState::ensure_unique_hidden() {
+    require(static_cast<bool>(hidden_), "a public state has no hidden state");
+    if (!hidden_.unique()) {
+        hidden_ = std::make_shared<HiddenState>(*hidden_);
+    }
 }
 
 void GameState::start_round() {
     remaining_mask_ = kFullCardMask;
-    deck_order_.clear();
+    if (!hidden_) return;
+    ensure_unique_hidden();
+    std::vector<std::uint8_t>& deck_order = hidden_->deck_order;
+    deck_order.clear();
     for (int card = 0; card < kCardCount; ++card) {
-        deck_order_.push_back(static_cast<std::uint8_t>(card));
+        deck_order.push_back(static_cast<std::uint8_t>(card));
     }
-    if (!public_copy_) {
-        std::shuffle(deck_order_.begin(), deck_order_.end(), rng_);
-    }
+    std::shuffle(deck_order.begin(), deck_order.end(), hidden_->rng);
 }
 
 int GameState::draw_one_random() {
-    require(!public_copy_, "a public state cannot draw a hidden random card");
-    while (!deck_order_.empty()
-           && (remaining_mask_ & (std::uint16_t(1) << deck_order_.front())) == 0) {
-        deck_order_.erase(deck_order_.begin());
+    require(static_cast<bool>(hidden_),
+            "a public state cannot draw a hidden random card");
+    ensure_unique_hidden();
+    std::vector<std::uint8_t>& deck_order = hidden_->deck_order;
+    while (!deck_order.empty()
+           && (remaining_mask_ & (std::uint16_t(1) << deck_order.front())) == 0) {
+        deck_order.erase(deck_order.begin());
     }
     int card_id = -1;
-    if (!deck_order_.empty()) {
-        card_id = deck_order_.front();
-        deck_order_.erase(deck_order_.begin());
+    if (!deck_order.empty()) {
+        card_id = deck_order.front();
+        deck_order.erase(deck_order.begin());
     } else {
         std::vector<int> choices;
         for (int id = 0; id < kCardCount; ++id) {
@@ -741,7 +743,7 @@ int GameState::draw_one_random() {
         require(!choices.empty(), "cannot draw from an empty card pile");
         std::uniform_int_distribution<int> distribution(
             0, static_cast<int>(choices.size()) - 1);
-        card_id = choices[distribution(rng_)];
+        card_id = choices[distribution(hidden_->rng)];
     }
     return draw_one_known(card_id);
 }
@@ -751,11 +753,15 @@ int GameState::draw_one_known(int card_id) {
     const std::uint16_t bit = static_cast<std::uint16_t>(1u << card_id);
     require((remaining_mask_ & bit) != 0, "card is not in the remaining pile");
     remaining_mask_ = static_cast<std::uint16_t>(remaining_mask_ & ~bit);
-    for (std::vector<std::uint8_t>::iterator it = deck_order_.begin();
-         it != deck_order_.end(); ++it) {
-        if (*it == card_id) {
-            deck_order_.erase(it);
-            break;
+    if (hidden_) {
+        ensure_unique_hidden();
+        std::vector<std::uint8_t>& deck_order = hidden_->deck_order;
+        for (std::vector<std::uint8_t>::iterator it = deck_order.begin();
+             it != deck_order.end(); ++it) {
+            if (*it == card_id) {
+                deck_order.erase(it);
+                break;
+            }
         }
     }
     ++draw_count_;
@@ -763,15 +769,17 @@ int GameState::draw_one_known(int card_id) {
     return card_id;
 }
 
-void GameState::set_pending_from_cards(const std::vector<int>& card_ids) {
-    require(!card_ids.empty() && card_ids.size() <= 2,
+void GameState::set_pending_from_cards(
+    const int* card_ids,
+    std::size_t card_count) {
+    require(card_ids != 0 && card_count >= 1 && card_count <= 2,
             "a public event must contain one or two cards");
     const Card& first = deck()[card_ids[0]];
     const std::size_t expected = first.is_switch ? 2u : 1u;
-    require(card_ids.size() == expected, "wrong number of cards for public event");
+    require(card_count == expected, "wrong number of cards for public event");
     pending_ = PendingEvent();
-    pending_.count = static_cast<std::uint8_t>(card_ids.size());
-    for (std::size_t i = 0; i < card_ids.size(); ++i) {
+    pending_.count = static_cast<std::uint8_t>(card_count);
+    for (std::size_t i = 0; i < card_count; ++i) {
         pending_.card_ids[i] = static_cast<std::uint8_t>(card_ids[i]);
     }
     const int target_id = first.is_switch ? card_ids[1] : card_ids[0];
@@ -785,31 +793,40 @@ void GameState::set_pending_from_cards(const std::vector<int>& card_ids) {
 void GameState::draw() {
     require(status_ == Status::Playing && !has_pending_,
             "draw requires a playing state without a pending event");
-    std::vector<int> cards;
-    const int first = draw_one_random();
-    cards.push_back(first);
-    if (deck()[first].is_switch) {
-        cards.push_back(draw_one_random());
-    }
-    set_pending_from_cards(cards);
+    int cards[2] = {draw_one_random(), -1};
+    const std::size_t card_count = deck()[cards[0]].is_switch ? 2u : 1u;
+    if (card_count == 2) cards[1] = draw_one_random();
+    set_pending_from_cards(cards, card_count);
 }
 
 void GameState::draw_known_cards(const std::vector<int>& card_ids) {
+    draw_known_card_ids(card_ids.data(), card_ids.size());
+}
+
+void GameState::draw_known_cards(int first_card_id, int second_card_id) {
+    const int cards[2] = {first_card_id, second_card_id};
+    draw_known_card_ids(cards, second_card_id < 0 ? 1u : 2u);
+}
+
+void GameState::draw_known_card_ids(
+    const int* card_ids,
+    std::size_t card_count) {
     require(status_ == Status::Playing && !has_pending_,
             "known draw requires a playing state without a pending event");
-    require(!card_ids.empty(), "known draw must contain at least one card");
+    require(card_ids != 0 && card_count >= 1,
+            "known draw must contain at least one card");
     bool seen[kCardCount] = {false, false, false, false, false, false,
                              false, false, false, false, false};
-    for (std::size_t i = 0; i < card_ids.size(); ++i) {
+    for (std::size_t i = 0; i < card_count; ++i) {
         require(card_ids[i] >= 0 && card_ids[i] < kCardCount,
                 "known draw contains an invalid card");
         require(!seen[card_ids[i]], "known draw repeats a card");
         seen[card_ids[i]] = true;
     }
     const std::size_t expected = deck()[card_ids[0]].is_switch ? 2u : 1u;
-    require(card_ids.size() == expected, "known draw has the wrong card count");
-    for (std::size_t i = 0; i < card_ids.size(); ++i) draw_one_known(card_ids[i]);
-    set_pending_from_cards(card_ids);
+    require(card_count == expected, "known draw has the wrong card count");
+    for (std::size_t i = 0; i < card_count; ++i) draw_one_known(card_ids[i]);
+    set_pending_from_cards(card_ids, card_count);
 }
 
 void GameState::restore_pending(const PendingEvent& event) {
@@ -908,16 +925,22 @@ const std::vector<LineScore>& GameState::round_scores() const {
 }
 
 const std::vector<std::uint8_t>& GameState::hidden_deck_order() const {
-    return deck_order_;
+    static const std::vector<std::uint8_t> empty;
+    return hidden_ ? hidden_->deck_order : empty;
 }
 
 bool GameState::is_public_copy() const {
-    return public_copy_;
+    return !hidden_;
 }
 
 std::string GameState::random_state() const {
     std::ostringstream output;
-    output << rng_;
+    if (hidden_) {
+        output << hidden_->rng;
+    } else {
+        const std::mt19937_64 empty(0);
+        output << empty;
+    }
     return output.str();
 }
 
@@ -985,16 +1008,17 @@ int GameState::circle_route_bonus() const {
     return result;
 }
 
-std::vector<Action> GameState::section_actions(
+void GameState::append_section_actions(
     Symbol target_symbol,
     bool wild,
     bool source_any,
-    PencilPower power) const {
+    PencilPower power,
+    std::vector<Action>* destination) const {
+    require(destination != 0, "action destination is required");
     const int color = order_[round_index_];
     const LineState& line = lines_[color];
     const std::uint64_t source_mask = source_any
         ? line.station_mask : line.leaf_mask;
-    std::vector<Action> actions;
     for (int source = 0; source < kStationCount; ++source) {
         if ((source_mask & (std::uint64_t(1) << source)) == 0) continue;
         const std::vector<std::pair<int, int> >& adjacent =
@@ -1012,53 +1036,85 @@ std::vector<Action> GameState::section_actions(
                 && station.symbol != target_symbol) {
                 continue;
             }
-            actions.push_back(Action(edge_id, source, target, power));
+            destination->push_back(Action(edge_id, source, target, power));
         }
     }
-    return actions;
 }
 
 std::vector<Action> GameState::legal_actions() const {
+    std::vector<Action> result;
+    legal_actions(&result);
+    return result;
+}
+
+void GameState::legal_actions(std::vector<Action>* destination) const {
     require(status_ == Status::Playing && has_pending_,
             "legal actions require a pending decision");
+    require(destination != 0, "legal action destination is required");
+    destination->clear();
     if (double_section_pending_) {
         bool switch_revealed = false;
         for (int index = 0; index < pending_.count; ++index) {
             if (deck()[pending_.card_ids[index]].is_switch) switch_revealed = true;
         }
-        return section_actions(
+        append_section_actions(
             double_target_symbol_, false,
             pending_.source_any || switch_revealed,
-            kDoubleSection);
+            kDoubleSection, destination);
+        return;
     }
 
-    const std::vector<Action> base = section_actions(
-        pending_.target_symbol, pending_.wild, pending_.source_any, kNoPower);
+    append_section_actions(
+        pending_.target_symbol, pending_.wild, pending_.source_any,
+        kNoPower, destination);
+    const std::size_t base_count = destination->size();
     const PencilPower power = active_power();
     if ((power != kWildCard && power != kRailroadSwitch)
         || !power_available(power)) {
-        return base;
+        return;
     }
-    if (power == kRailroadSwitch && draw_count_ <= 2) return base;
+    if (power == kRailroadSwitch && draw_count_ <= 2) return;
 
-    const std::vector<Action> powered = section_actions(
+    const std::size_t powered_begin = destination->size();
+    append_section_actions(
         power == kWildCard ? kWild : pending_.target_symbol,
         power == kWildCard || pending_.wild,
         power == kRailroadSwitch ? true : pending_.source_any,
-        power);
-    std::vector<Action> result = base;
-    for (std::size_t index = 0; index < powered.size(); ++index) {
+        power, destination);
+    std::size_t write_index = powered_begin;
+    for (std::size_t index = powered_begin; index < destination->size(); ++index) {
         bool duplicate_geometry = false;
-        for (std::size_t base_index = 0; base_index < base.size(); ++base_index) {
-            if (powered[index].edge_id == base[base_index].edge_id
-                && powered[index].source == base[base_index].source
-                && powered[index].target == base[base_index].target) {
+        for (std::size_t base_index = 0; base_index < base_count; ++base_index) {
+            const Action& powered = (*destination)[index];
+            const Action& base = (*destination)[base_index];
+            if (powered.edge_id == base.edge_id
+                && powered.source == base.source
+                && powered.target == base.target) {
                 duplicate_geometry = true;
                 break;
             }
         }
-        if (!duplicate_geometry) result.push_back(powered[index]);
+        if (!duplicate_geometry) {
+            if (write_index != index) {
+                (*destination)[write_index] = (*destination)[index];
+            }
+            ++write_index;
+        }
     }
+    destination->resize(write_index);
+}
+
+std::vector<Action> GameState::legal_actions_for_event(
+    Symbol target_symbol,
+    bool wild,
+    bool source_any) const {
+    require(status_ == Status::Playing && !has_pending_,
+            "event action query requires a pending-free playing state");
+    require(target_symbol >= kWild && target_symbol <= kPentagon,
+            "event action query has an invalid target symbol");
+    std::vector<Action> result;
+    append_section_actions(
+        target_symbol, wild, source_any, kNoPower, &result);
     return result;
 }
 
@@ -1114,6 +1170,10 @@ ScoreDelta GameState::score_delta_unchecked(const Action& action) const {
 
 ScoreDelta GameState::score_delta(const Action& action) const {
     require(action_is_legal(action), "score delta requires a legal action");
+    return score_delta_for_legal_action(action);
+}
+
+ScoreDelta GameState::score_delta_for_legal_action(const Action& action) const {
     if (action.is_pass()) return ScoreDelta();
     return score_delta_unchecked(action);
 }
@@ -1285,39 +1345,68 @@ std::vector<Candidate> GameState::candidates() const {
     return result;
 }
 
-std::vector<ChanceOutcome> GameState::public_successors() const {
+PublicDrawList GameState::public_draws() const {
     require(status_ == Status::Playing && !has_pending_,
             "chance expansion requires a pending-free playing state");
-    std::vector<int> remaining;
+    std::array<int, kCardCount> remaining;
+    std::size_t remaining_count = 0;
     for (int card = 0; card < kCardCount; ++card) {
-        if (remaining_mask_ & (std::uint16_t(1) << card)) remaining.push_back(card);
+        if (remaining_mask_ & (std::uint16_t(1) << card)) {
+            remaining[remaining_count++] = card;
+        }
     }
-    require(!remaining.empty(), "cannot expand an empty card pile");
-    const double first_probability = 1.0 / static_cast<double>(remaining.size());
-    std::vector<ChanceOutcome> result;
-    for (std::size_t i = 0; i < remaining.size(); ++i) {
+    require(remaining_count != 0, "cannot expand an empty card pile");
+    const double first_probability = 1.0
+        / static_cast<double>(remaining_count);
+    PublicDrawList result;
+    result.count = 0;
+    for (std::size_t i = 0; i < remaining_count; ++i) {
         const int first = remaining[i];
         if (!deck()[first].is_switch) {
-            GameState child = copy_public();
-            child.draw_known_cards(std::vector<int>(1, first));
-            result.push_back(ChanceOutcome(first_probability, child));
+            require(result.count < result.items.size(),
+                    "public draw capacity is too small");
+            PublicDraw& draw = result.items[result.count++];
+            draw.probability = first_probability;
+            draw.card_ids[0] = static_cast<std::uint8_t>(first);
+            draw.card_ids[1] = 0;
+            draw.count = 1;
             continue;
         }
-        std::vector<int> following;
-        for (std::size_t j = 0; j < remaining.size(); ++j) {
-            if (j != i) following.push_back(remaining[j]);
-        }
-        require(!following.empty(), "switch card has no following card");
+        require(remaining_count > 1, "switch card has no following card");
         const double probability = first_probability
-            / static_cast<double>(following.size());
-        for (std::size_t j = 0; j < following.size(); ++j) {
-            GameState child = copy_public();
-            std::vector<int> cards;
-            cards.push_back(first);
-            cards.push_back(following[j]);
-            child.draw_known_cards(cards);
-            result.push_back(ChanceOutcome(probability, child));
+            / static_cast<double>(remaining_count - 1);
+        for (std::size_t j = 0; j < remaining_count; ++j) {
+            if (j == i) continue;
+            require(result.count < result.items.size(),
+                    "public draw capacity is too small");
+            PublicDraw& draw = result.items[result.count++];
+            draw.probability = probability;
+            draw.card_ids[0] = static_cast<std::uint8_t>(first);
+            draw.card_ids[1] = static_cast<std::uint8_t>(remaining[j]);
+            draw.count = 2;
         }
+    }
+    return result;
+}
+
+GameState GameState::public_successor(const PublicDraw& draw) const {
+    require(draw.count == 1 || draw.count == 2,
+            "public draw has an invalid card count");
+    GameState child = copy_public();
+    child.draw_known_cards(
+        static_cast<int>(draw.card_ids[0]),
+        draw.count == 2 ? static_cast<int>(draw.card_ids[1]) : -1);
+    return child;
+}
+
+std::vector<ChanceOutcome> GameState::public_successors() const {
+    const PublicDrawList draws = public_draws();
+    std::vector<ChanceOutcome> result;
+    result.reserve(draws.count);
+    for (std::size_t index = 0; index < draws.count; ++index) {
+        result.emplace_back(
+            draws.items[index].probability,
+            public_successor(draws.items[index]));
     }
     return result;
 }
@@ -1431,10 +1520,7 @@ void GameState::rebuild_derived_state(bool terminated_value) {
     pending_ = PendingEvent();
     double_section_pending_ = false;
     double_target_symbol_ = kWild;
-    deck_order_.clear();
-    public_copy_ = true;
-    /* The hidden random stream is intentionally absent from a public state. */
-    rng_.seed(0);
+    hidden_.reset();
 }
 
 void GameState::rebuild_round_scores(bool terminated_value) {
@@ -1503,9 +1589,7 @@ GameState GameState::from_canonical(const PublicState& state) {
 
 GameState GameState::copy_public() const {
     GameState result(*this);
-    result.deck_order_.clear();
-    result.public_copy_ = true;
-    result.rng_.seed(0);
+    result.hidden_.reset();
     return result;
 }
 
@@ -1553,8 +1637,9 @@ void GameState::restore_hidden_state(
     const std::string& state,
     const std::vector<std::uint8_t>& deck_order,
     bool public_copy) {
+    std::mt19937_64 restored_rng;
     std::istringstream input(state);
-    input >> rng_;
+    input >> restored_rng;
     require(!input.fail(), "serialized random state is invalid");
     bool seen[kCardCount] = {false, false, false, false, false, false,
                              false, false, false, false, false};
@@ -1567,8 +1652,13 @@ void GameState::restore_hidden_state(
                 "serialized deck contains a consumed card");
         seen[card] = true;
     }
-    deck_order_ = deck_order;
-    public_copy_ = public_copy;
+    if (public_copy) {
+        hidden_.reset();
+    } else {
+        hidden_ = std::make_shared<HiddenState>(0);
+        hidden_->rng = restored_rng;
+        hidden_->deck_order = deck_order;
+    }
 }
 
 std::string GameState::canonical_signature() const {
@@ -1749,6 +1839,9 @@ Candidate::Candidate(int index, const Action& selected, int value,
 
 ChanceOutcome::ChanceOutcome(double probability_value, const GameState& child)
     : probability(probability_value), state(child) {}
+
+ChanceOutcome::ChanceOutcome(double probability_value, GameState&& child)
+    : probability(probability_value), state(std::move(child)) {}
 
 }  // namespace native
 }  // namespace next_station

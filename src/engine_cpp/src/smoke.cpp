@@ -17,6 +17,8 @@ void check_map_and_deck() {
     expect(map.stations.size() == kStationCount, "station count mismatch");
     expect(map.edges.size() == kEdgeCount, "edge count mismatch");
     expect(map.district_count == kDistrictCount, "district count mismatch");
+    expect(map.district_names.size() == kDistrictCount,
+           "district-name count mismatch");
     expect(deck().size() == kCardCount, "card count mismatch");
     expect(deck()[10].is_switch, "switch card id mismatch");
 }

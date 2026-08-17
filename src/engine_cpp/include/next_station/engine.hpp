@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@ static const int kPassAction = kEdgeCount;
 static const int kObservationDim = 1041;
 static const int kObjectiveCount = 5;
 static const int kPowerCount = 4;
+static const int kMaxPublicDrawCount = 2 * (kCardCount - 1);
 
 enum Color : std::uint8_t {
     kPurple = 0,
@@ -101,6 +103,7 @@ struct Edge {
 struct Map {
     std::vector<Station> stations;
     std::vector<Edge> edges;
+    std::vector<std::string> district_names;
     std::vector<std::vector<int> > adjacency;
     std::vector<std::vector<std::pair<int, int> > > oriented_adjacency;
     std::vector<Mask155> conflict_masks;
@@ -229,6 +232,17 @@ struct PublicState {
     PublicState();
 };
 
+struct PublicDraw {
+    double probability;
+    std::array<std::uint8_t, 2> card_ids;
+    std::uint8_t count;
+};
+
+struct PublicDrawList {
+    std::array<PublicDraw, kMaxPublicDrawCount> items;
+    std::size_t count;
+};
+
 struct Candidate;
 struct ChanceOutcome;
 
@@ -242,6 +256,7 @@ public:
     void reset();
     void draw();
     void draw_known_cards(const std::vector<int>& card_ids);
+    void draw_known_cards(int first_card_id, int second_card_id = -1);
     void restore_pending(const PendingEvent& event);
 
     Status status() const;
@@ -271,11 +286,19 @@ public:
     std::string random_state() const;
 
     std::vector<Action> legal_actions() const;
+    void legal_actions(std::vector<Action>* destination) const;
+    std::vector<Action> legal_actions_for_event(
+        Symbol target_symbol,
+        bool wild,
+        bool source_any) const;
     ScoreDelta score_delta(const Action& action) const;
+    ScoreDelta score_delta_for_legal_action(const Action& action) const;
     void apply_action(const Action& action);
     void apply_action_unchecked(const Action& action);
 
     std::vector<Candidate> candidates() const;
+    PublicDrawList public_draws() const;
+    GameState public_successor(const PublicDraw& draw) const;
     std::vector<ChanceOutcome> public_successors() const;
 
     PublicState canonical() const;
@@ -303,6 +326,13 @@ public:
     void write_features(float* destination, std::size_t capacity) const;
 
 private:
+    struct HiddenState {
+        std::mt19937_64 rng;
+        std::vector<std::uint8_t> deck_order;
+
+        explicit HiddenState(std::uint64_t seed) : rng(seed), deck_order() {}
+    };
+
     const Map* map_;
     std::array<std::uint8_t, kColorCount> order_;
     std::array<LineState, kColorCount> lines_;
@@ -335,16 +365,16 @@ private:
     Status status_;
     bool has_pending_;
     PendingEvent pending_;
-    std::mt19937_64 rng_;
-    std::vector<std::uint8_t> deck_order_;
-    bool public_copy_;
+    std::shared_ptr<HiddenState> hidden_;
 
     void validate_order() const;
     void validate_advanced_config() const;
+    void ensure_unique_hidden();
     void start_round();
     int draw_one_random();
     int draw_one_known(int card_id);
-    void set_pending_from_cards(const std::vector<int>& card_ids);
+    void draw_known_card_ids(const int* card_ids, std::size_t card_count);
+    void set_pending_from_cards(const int* card_ids, std::size_t card_count);
     void update_score_caches(const Action& action);
     void complete_turn();
     void finish_round();
@@ -359,11 +389,12 @@ private:
         int interchange_stations,
         int thames_crossings) const;
     int circle_route_bonus() const;
-    std::vector<Action> section_actions(
+    void append_section_actions(
         Symbol target_symbol,
         bool wild,
         bool source_any,
-        PencilPower power) const;
+        PencilPower power,
+        std::vector<Action>* destination) const;
     bool action_is_legal(const Action& action) const;
     ScoreDelta score_delta_unchecked(const Action& action) const;
 };
@@ -383,6 +414,7 @@ struct ChanceOutcome {
     GameState state;
 
     ChanceOutcome(double probability_value, const GameState& child);
+    ChanceOutcome(double probability_value, GameState&& child);
 };
 
 }  // namespace native

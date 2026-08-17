@@ -14,6 +14,7 @@ from .lookahead import (
 from .lookahead2 import Depth2Policy
 from .mcts import (
     DEFAULT_MCTS_EXPLORATION,
+    DEFAULT_MCTS_SIMPLE_RANDOM_PASS_PROBABILITY,
     DEFAULT_MCTS_SIMULATIONS,
     MCTSActionEstimate,
     MCTSDecision,
@@ -29,6 +30,7 @@ from .scoring import ImmediateReward, PositionScore, immediate_reward, position_
 
 __all__ = [
     "DEFAULT_MCTS_EXPLORATION",
+    "DEFAULT_MCTS_SIMPLE_RANDOM_PASS_PROBABILITY",
     "DEFAULT_MCTS_SIMULATIONS",
     "GreedyDecision",
     "GreedyPolicy",

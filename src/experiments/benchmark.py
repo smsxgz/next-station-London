@@ -37,6 +37,7 @@ POLICIES = (
     "simple-random",
     "greedy",
     "lookahead-2",
+    "lookahead-3",
     "lookahead-4",
     "mcts",
 )
@@ -45,6 +46,7 @@ POLICY_LABELS = {
     "simple-random": "Random",
     "greedy": "Greedy",
     "lookahead-2": "Lookahead-2",
+    "lookahead-3": "Lookahead-3",
     "lookahead-4": "Lookahead-4",
 }
 

@@ -5,6 +5,13 @@ Objectives, Pencil Powers, scoring, public copies, and native serialization.
 Python exposes the existing object API through `engine_cpp.GameSession`; solver,
 experiment, and RL entry points use that adapter.
 
+Solver-specific native search code lives in `src/solver/cpp`. It links this
+engine but is not part of the engine's rules or state ownership.
+
+The C ABI also exports immutable map and deck metadata plus standard-game legal
+edge masks. Python builds lightweight value views from those exports; it does
+not reconstruct map geometry, card layout, leaf stations, or legal moves.
+
 The implementation stores each line's stations in one `uint64_t`, its 155
 sections in three `uint64_t` words, and card/district state in fixed-width
 masks. The C ABI also provides the 1041-dimensional afterstate feature schema
@@ -19,6 +26,7 @@ cmake -S src/engine_cpp -B build/engine-cpp `
   -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/engine-cpp --parallel
 build/engine-cpp/next_station_engine_check.exe
+build/engine-cpp/solver-cpp/next_station_solver_check.exe
 ```
 
 The Python adapter searches `build/engine-cpp` and its `Release` subdirectory.
@@ -44,6 +52,7 @@ Run the cross-language rule and serialization checks without pytest:
 ```powershell
 $env:PYTHONPATH = "src"
 python -m engine_cpp.checks
+python -m solver.checks
 python -m rl.afterstate check --games 4 --device cpu
 python -m solver.RL check --games 4 --device cpu
 ```

@@ -2,6 +2,8 @@
 #include "next_station/c_api.h"
 #include "next_station/engine.hpp"
 
+#include "c_api_internal.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -22,6 +24,7 @@ namespace {
 using next_station::native::Candidate;
 using next_station::native::ChanceOutcome;
 using next_station::native::GameState;
+using next_station::native::PublicDrawList;
 using next_station::native::PublicState;
 using next_station::native::kColorCount;
 using next_station::native::kObservationDim;
@@ -176,11 +179,11 @@ OwnerCounts count_owner(const ns_public_state& input) {
     OwnerCounts result;
     const GameState game = GameState::from_canonical(from_c_state(input));
     if (game.terminated()) return result;
-    const std::vector<ChanceOutcome> outcomes = game.public_successors();
-    result.outcomes = outcomes.size();
-    for (std::size_t outcome = 0; outcome < outcomes.size(); ++outcome) {
-        result.candidates +=
-            outcomes[outcome].state.legal_actions().size() + 1;
+    const PublicDrawList draws = game.public_draws();
+    result.outcomes = draws.count;
+    for (std::size_t index = 0; index < draws.count; ++index) {
+        const GameState outcome = game.public_successor(draws.items[index]);
+        result.candidates += outcome.legal_actions().size() + 1;
     }
     return result;
 }
@@ -238,21 +241,22 @@ NativeExpansionHandle* build_expansion(
             const GameState game = GameState::from_canonical(
                 from_c_state(inputs[owner]));
             if (game.terminated()) return;
-            const std::vector<ChanceOutcome> outcomes = game.public_successors();
+            const PublicDrawList draws = game.public_draws();
             std::size_t candidate_cursor = first_candidate;
-            for (std::size_t index = 0; index < outcomes.size(); ++index) {
+            for (std::size_t index = 0; index < draws.count; ++index) {
+                const GameState outcome = game.public_successor(draws.items[index]);
                 const std::vector<Candidate> candidates =
-                    outcomes[index].state.candidates();
+                    outcome.candidates();
                 const std::size_t outcome_cursor = first_outcome + index;
-                if (!std::isfinite(outcomes[index].probability)
-                    || outcomes[index].probability <= 0.0
+                if (!std::isfinite(draws.items[index].probability)
+                    || draws.items[index].probability <= 0.0
                     || candidates.empty()) {
                     throw std::runtime_error(
                         "native expansion produced an invalid outcome");
                 }
                 result->outcome_owners[outcome_cursor] = owner;
                 result->outcome_probabilities[outcome_cursor] =
-                    outcomes[index].probability;
+                    draws.items[index].probability;
                 result->outcome_candidate_offsets[outcome_cursor] =
                     static_cast<int32_t>(candidate_cursor);
                 result->outcome_candidate_counts[outcome_cursor] =
@@ -271,7 +275,7 @@ NativeExpansionHandle* build_expansion(
                     ++candidate_cursor;
                 }
             }
-            if (outcomes.size()
+            if (draws.count
                     != owner_counts[static_cast<std::size_t>(owner)].outcomes
                 || candidate_cursor
                     != candidate_offsets[static_cast<std::size_t>(owner) + 1]) {
@@ -525,6 +529,16 @@ GameState deserialize_game(const std::uint8_t* data, std::size_t size) {
 
 }  // namespace
 
+namespace next_station {
+namespace native {
+
+GameState& game_from_c_handle(ns_game_handle handle) {
+    return ::require_game(handle).game;
+}
+
+}  // namespace native
+}  // namespace next_station
+
 extern "C" int ns_expand_afterstate(
     const ns_public_state* input,
     ns_outcome* outcomes,
@@ -630,6 +644,154 @@ extern "C" int ns_analyze_afterstate(
         destination->current_total = game.current_total();
         destination->final_total = game.terminated()
             ? game.final_score().total : -1;
+        return 0;
+    } catch (const std::exception& error) {
+        g_last_error = error.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown native engine error";
+        return 1;
+    }
+}
+
+extern "C" int32_t ns_station_count(void) {
+    return next_station::native::kStationCount;
+}
+
+extern "C" int32_t ns_edge_count(void) {
+    return next_station::native::kEdgeCount;
+}
+
+extern "C" int32_t ns_card_count(void) {
+    return next_station::native::kCardCount;
+}
+
+extern "C" int32_t ns_district_count(void) {
+    return next_station::native::kDistrictCount;
+}
+
+extern "C" int ns_station_get(int32_t id, ns_station_info* destination) {
+    try {
+        g_last_error.clear();
+        const next_station::native::Map& map = next_station::native::london_map();
+        if (destination == 0 || id < 0
+            || id >= static_cast<int32_t>(map.stations.size())) {
+            throw std::runtime_error("station metadata query is invalid");
+        }
+        const next_station::native::Station& station = map.stations[id];
+        destination->id = station.id;
+        destination->x = station.x;
+        destination->y = station.y;
+        destination->symbol = static_cast<int8_t>(station.symbol);
+        destination->district = static_cast<int8_t>(station.district);
+        destination->tourist = station.tourist ? 1 : 0;
+        destination->departure_color = static_cast<int8_t>(
+            station.departure_color);
+        return 0;
+    } catch (const std::exception& error) {
+        g_last_error = error.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown native engine error";
+        return 1;
+    }
+}
+
+extern "C" int ns_edge_get(int32_t id, ns_edge_info* destination) {
+    try {
+        g_last_error.clear();
+        const next_station::native::Map& map = next_station::native::london_map();
+        if (destination == 0 || id < 0
+            || id >= static_cast<int32_t>(map.edges.size())) {
+            throw std::runtime_error("edge metadata query is invalid");
+        }
+        const next_station::native::Edge& edge = map.edges[id];
+        destination->id = edge.id;
+        destination->u = edge.u;
+        destination->v = edge.v;
+        destination->crosses_thames = edge.crosses_thames ? 1 : 0;
+        destination->district_mask = edge.district_mask;
+        for (int word = 0; word < 3; ++word) {
+            destination->conflict_words[word] =
+                map.conflict_masks[id].words[word];
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        g_last_error = error.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown native engine error";
+        return 1;
+    }
+}
+
+extern "C" int ns_card_get(int32_t id, ns_card_info* destination) {
+    try {
+        g_last_error.clear();
+        const std::array<next_station::native::Card,
+                         next_station::native::kCardCount>& cards =
+            next_station::native::deck();
+        if (destination == 0 || id < 0
+            || id >= static_cast<int32_t>(cards.size())) {
+            throw std::runtime_error("card metadata query is invalid");
+        }
+        const next_station::native::Card& card = cards[id];
+        destination->id = card.id;
+        destination->symbol = static_cast<int8_t>(card.symbol);
+        destination->underground = card.underground ? 1 : 0;
+        destination->is_switch = card.is_switch ? 1 : 0;
+        return 0;
+    } catch (const std::exception& error) {
+        g_last_error = error.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown native engine error";
+        return 1;
+    }
+}
+
+extern "C" const char* ns_district_name(int32_t id) {
+    try {
+        g_last_error.clear();
+        const next_station::native::Map& map = next_station::native::london_map();
+        if (id < 0 || id >= static_cast<int32_t>(map.district_names.size())) {
+            throw std::runtime_error("district metadata query is invalid");
+        }
+        return map.district_names[id].c_str();
+    } catch (const std::exception& error) {
+        g_last_error = error.what();
+        return 0;
+    } catch (...) {
+        g_last_error = "unknown native engine error";
+        return 0;
+    }
+}
+
+extern "C" int ns_legal_edge_mask(
+    const ns_public_state* input,
+    int8_t target_symbol,
+    uint8_t wild,
+    uint8_t source_any,
+    uint64_t destination[3]) {
+    try {
+        g_last_error.clear();
+        if (input == 0 || destination == 0) {
+            throw std::runtime_error(
+                "legal-mask input and destination pointers are required");
+        }
+        const GameState game = GameState::from_canonical(from_c_state(*input));
+        const std::vector<next_station::native::Action> actions =
+            game.legal_actions_for_event(
+                static_cast<next_station::native::Symbol>(target_symbol),
+                wild != 0,
+                source_any != 0);
+        destination[0] = 0;
+        destination[1] = 0;
+        destination[2] = 0;
+        for (std::size_t index = 0; index < actions.size(); ++index) {
+            const int edge = actions[index].edge_id;
+            destination[edge / 64] |= uint64_t(1) << (edge % 64);
+        }
         return 0;
     } catch (const std::exception& error) {
         g_last_error = error.what();
@@ -1117,7 +1279,8 @@ extern "C" int ns_game_legal_actions(
         }
         for (std::size_t index = 0; index < legal.size(); ++index) {
             const next_station::native::Action& action = legal[index];
-            const next_station::native::ScoreDelta reward = game.score_delta(action);
+            const next_station::native::ScoreDelta reward =
+                game.score_delta_for_legal_action(action);
             actions[index].edge_id = action.edge_id;
             actions[index].source = action.source;
             actions[index].target = action.target;
@@ -1235,6 +1398,18 @@ extern "C" int32_t ns_candidate_size(void) {
 
 extern "C" int32_t ns_state_metrics_size(void) {
     return static_cast<int32_t>(sizeof(ns_state_metrics));
+}
+
+extern "C" int32_t ns_station_info_size(void) {
+    return static_cast<int32_t>(sizeof(ns_station_info));
+}
+
+extern "C" int32_t ns_edge_info_size(void) {
+    return static_cast<int32_t>(sizeof(ns_edge_info));
+}
+
+extern "C" int32_t ns_card_info_size(void) {
+    return static_cast<int32_t>(sizeof(ns_card_info));
 }
 
 extern "C" int32_t ns_game_snapshot_size(void) {

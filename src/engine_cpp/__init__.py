@@ -1,5 +1,6 @@
 """Public Python API for the C++ Next Station: London engine."""
 
+from ._native import native_available, native_library_path
 from .london import COLORS, LONDON, SYMBOLS, Edge, LondonMap, Station
 from .types import (
     Action,
@@ -8,7 +9,6 @@ from .types import (
     DECK_BY_ID,
     FinalScore,
     GameError,
-    INTERCHANGE_POINTS,
     LineScore,
     LineState,
     MoveRecord,
@@ -19,10 +19,9 @@ from .types import (
     PENCIL_POWER_WILD,
     PENCIL_POWERS,
     SHARED_OBJECTIVES,
-    TOURIST_TRACK,
 )
 
-from .session import GameSession, native_available, native_library_path
+from .session import GameSession, legal_edge_mask
 
 __all__ = [
     "Action",
@@ -34,7 +33,6 @@ __all__ = [
     "FinalScore",
     "GameError",
     "GameSession",
-    "INTERCHANGE_POINTS",
     "LONDON",
     "LineScore",
     "LineState",
@@ -49,7 +47,7 @@ __all__ = [
     "SHARED_OBJECTIVES",
     "Station",
     "SYMBOLS",
-    "TOURIST_TRACK",
+    "legal_edge_mask",
     "native_available",
     "native_library_path",
 ]

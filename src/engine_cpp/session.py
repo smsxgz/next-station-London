@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import ctypes
-from functools import lru_cache
-import os
-from pathlib import Path
-import sys
 from typing import Any
 
+from ._native import (
+    NativeGameAction,
+    NativeGameOptions,
+    NativeGameSnapshot,
+    NativePublicState,
+    _native,
+    native_legal_edge_mask,
+)
 from .types import (
     Action,
     FinalScore,
@@ -38,215 +42,6 @@ _STARTS = {
 _MASK64 = (1 << 64) - 1
 
 
-class NativePublicState(ctypes.Structure):
-    _pack_ = 1
-    _fields_ = (
-        ("line_station_masks", ctypes.c_uint64 * 4),
-        ("line_edge_words", (ctypes.c_uint64 * 3) * 4),
-        ("remaining_mask", ctypes.c_uint16),
-        ("order", ctypes.c_uint8 * 4),
-        ("round_index", ctypes.c_uint8),
-        ("underground_count", ctypes.c_uint8),
-        ("draw_count", ctypes.c_uint8),
-        ("terminated", ctypes.c_uint8),
-    )
-
-
-class NativeGameSnapshot(ctypes.Structure):
-    _pack_ = 1
-    _fields_ = (
-        ("state", NativePublicState),
-        ("line_leaf_masks", ctypes.c_uint64 * 4),
-        ("shared_objectives_enabled", ctypes.c_uint8),
-        ("pencil_powers_enabled", ctypes.c_uint8),
-        ("objective_cards", ctypes.c_uint8 * 2),
-        ("shared_objective_mask", ctypes.c_uint8),
-        ("power_assignments", ctypes.c_int8 * 4),
-        ("used_power_mask", ctypes.c_uint8),
-        ("completed_objective_mask", ctypes.c_uint8),
-        ("double_section_pending", ctypes.c_uint8),
-        ("double_target_symbol", ctypes.c_int8),
-        ("has_pending", ctypes.c_uint8),
-        ("pending_card_ids", ctypes.c_uint8 * 2),
-        ("pending_card_count", ctypes.c_uint8),
-        ("pending_target_symbol", ctypes.c_int8),
-        ("pending_wild", ctypes.c_uint8),
-        ("pending_source_any", ctypes.c_uint8),
-        ("pending_final_card", ctypes.c_uint8),
-        ("partial_components", ctypes.c_int32 * 6),
-        ("score_summary", ctypes.c_int32 * 10),
-        ("round_score_count", ctypes.c_uint8),
-        ("round_scores", (ctypes.c_int32 * 6) * 4),
-    )
-
-
-class NativeGameAction(ctypes.Structure):
-    _pack_ = 1
-    _fields_ = (
-        ("edge_id", ctypes.c_int32),
-        ("source", ctypes.c_int32),
-        ("target", ctypes.c_int32),
-        ("power", ctypes.c_int8),
-        ("reward_components", ctypes.c_int32 * 5),
-    )
-
-
-class NativeGameOptions(ctypes.Structure):
-    _pack_ = 1
-    _fields_ = (
-        ("seed", ctypes.c_uint64),
-        ("has_seed", ctypes.c_uint8),
-        ("has_order", ctypes.c_uint8),
-        ("order", ctypes.c_uint8 * 4),
-        ("shared_objectives_enabled", ctypes.c_uint8),
-        ("pencil_powers_enabled", ctypes.c_uint8),
-        ("objective_count", ctypes.c_uint8),
-        ("objective_cards", ctypes.c_uint8 * 2),
-        ("has_power_assignments", ctypes.c_uint8),
-        ("power_assignments", ctypes.c_int8 * 4),
-    )
-
-
-def _library_names() -> tuple[str, ...]:
-    if sys.platform == "win32":
-        return ("next_station_engine_capi.dll",)
-    if sys.platform == "darwin":
-        return ("libnext_station_engine_capi.dylib",)
-    return ("libnext_station_engine_capi.so",)
-
-
-def native_library_path() -> Path:
-    configured = os.environ.get("NEXT_STATION_NATIVE_LIBRARY")
-    if configured:
-        path = Path(configured).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"native engine library does not exist: {path}")
-        return path
-
-    root = Path(__file__).resolve().parents[2]
-    directories = (
-        Path(__file__).resolve().parent,
-        root / "build" / "engine-cpp",
-        root / "build" / "engine-cpp" / "Release",
-    )
-    candidates = tuple(
-        directory / name
-        for directory in directories
-        for name in _library_names()
-    )
-    for path in candidates:
-        if path.is_file():
-            return path
-    searched = ", ".join(str(path) for path in candidates)
-    raise FileNotFoundError("native engine is not built; searched " + searched)
-
-
-class _NativeLibrary:
-    def __init__(self) -> None:
-        self.path = native_library_path()
-        self.library = ctypes.CDLL(str(self.path))
-        handle = ctypes.c_void_p
-        handle_pointer = ctypes.POINTER(handle)
-        byte_pointer = ctypes.POINTER(ctypes.c_uint8)
-
-        self.library.ns_last_error.argtypes = ()
-        self.library.ns_last_error.restype = ctypes.c_char_p
-        self.library.ns_game_snapshot_size.argtypes = ()
-        self.library.ns_game_snapshot_size.restype = ctypes.c_int32
-        self.library.ns_game_action_size.argtypes = ()
-        self.library.ns_game_action_size.restype = ctypes.c_int32
-        self.library.ns_game_options_size.argtypes = ()
-        self.library.ns_game_options_size.restype = ctypes.c_int32
-
-        self.library.ns_game_create_configured.argtypes = (
-            ctypes.POINTER(NativeGameOptions),
-            handle_pointer,
-        )
-        self.library.ns_game_create_configured.restype = ctypes.c_int
-        self.library.ns_game_create_from_snapshot.argtypes = (
-            ctypes.POINTER(NativeGameSnapshot),
-            handle_pointer,
-        )
-        self.library.ns_game_create_from_snapshot.restype = ctypes.c_int
-        self.library.ns_game_clone.argtypes = (handle, handle_pointer)
-        self.library.ns_game_clone.restype = ctypes.c_int
-        self.library.ns_game_destroy.argtypes = (handle,)
-        self.library.ns_game_destroy.restype = None
-        self.library.ns_game_reset.argtypes = (handle,)
-        self.library.ns_game_reset.restype = ctypes.c_int
-        self.library.ns_game_export.argtypes = (
-            handle,
-            ctypes.POINTER(NativeGameSnapshot),
-        )
-        self.library.ns_game_export.restype = ctypes.c_int
-        self.library.ns_game_draw.argtypes = (handle,)
-        self.library.ns_game_draw.restype = ctypes.c_int
-        self.library.ns_game_draw_known.argtypes = (
-            handle,
-            byte_pointer,
-            ctypes.c_int32,
-        )
-        self.library.ns_game_draw_known.restype = ctypes.c_int
-        self.library.ns_game_legal_actions.argtypes = (
-            handle,
-            ctypes.POINTER(NativeGameAction),
-            ctypes.c_int32,
-            ctypes.POINTER(ctypes.c_int32),
-        )
-        self.library.ns_game_legal_actions.restype = ctypes.c_int
-        self.library.ns_game_apply_action.argtypes = (
-            handle,
-            ctypes.POINTER(NativeGameAction),
-        )
-        self.library.ns_game_apply_action.restype = ctypes.c_int
-        self.library.ns_game_serialize.argtypes = (
-            handle,
-            byte_pointer,
-            ctypes.c_int32,
-            ctypes.POINTER(ctypes.c_int32),
-        )
-        self.library.ns_game_serialize.restype = ctypes.c_int
-        self.library.ns_game_deserialize.argtypes = (
-            byte_pointer,
-            ctypes.c_int32,
-            handle_pointer,
-        )
-        self.library.ns_game_deserialize.restype = ctypes.c_int
-
-        sizes = (
-            ("game snapshot", NativeGameSnapshot, self.library.ns_game_snapshot_size),
-            ("game action", NativeGameAction, self.library.ns_game_action_size),
-            ("game options", NativeGameOptions, self.library.ns_game_options_size),
-        )
-        for label, structure, native_size in sizes:
-            actual = ctypes.sizeof(structure)
-            expected = int(native_size())
-            if actual != expected:
-                raise RuntimeError(
-                    f"native {label} size mismatch: C++={expected}, ctypes={actual}"
-                )
-
-    def check(self, result: int) -> None:
-        if result == 0:
-            return
-        raw = self.library.ns_last_error()
-        detail = raw.decode("utf-8") if raw else "unknown native engine error"
-        raise GameError(detail)
-
-
-@lru_cache(maxsize=1)
-def _native() -> _NativeLibrary:
-    return _NativeLibrary()
-
-
-def native_available() -> bool:
-    try:
-        _native()
-    except (OSError, RuntimeError):
-        return False
-    return True
-
-
 def _edge_mask(snapshot: NativeGameSnapshot, color_index: int) -> int:
     return sum(
         int(snapshot.state.line_edge_words[color_index][word]) << (word * 64)
@@ -256,6 +51,76 @@ def _edge_mask(snapshot: NativeGameSnapshot, color_index: int) -> int:
 
 def _ids_from_mask(mask: int) -> tuple[int, ...]:
     return tuple(index for index in range(mask.bit_length()) if mask & (1 << index))
+
+
+def _make_public_state(
+    *,
+    order: tuple[str, ...],
+    line_station_masks: tuple[int, ...],
+    line_edge_masks: tuple[int, ...],
+    remaining_mask: int,
+    round_index: int,
+    underground_count: int,
+    draw_count: int,
+    terminated: bool,
+) -> NativePublicState:
+    if len(order) != len(COLORS) or set(order) != set(COLORS):
+        raise GameError(f"order must contain each color once: {COLORS}")
+    if len(line_station_masks) != len(COLORS) or len(line_edge_masks) != len(COLORS):
+        raise GameError("public state must contain one station and edge mask per color")
+    state = NativePublicState()
+    for color_index in range(len(COLORS)):
+        state.line_station_masks[color_index] = int(line_station_masks[color_index])
+        edge_mask = int(line_edge_masks[color_index])
+        for word in range(3):
+            state.line_edge_words[color_index][word] = (
+                edge_mask >> (word * 64)
+            ) & _MASK64
+    for index, color in enumerate(order):
+        state.order[index] = _COLOR_TO_INDEX[color]
+    state.remaining_mask = remaining_mask
+    state.round_index = round_index
+    state.underground_count = underground_count
+    state.draw_count = draw_count
+    state.terminated = int(terminated)
+    return state
+
+
+def legal_edge_mask(
+    *,
+    order: tuple[str, ...],
+    line_station_masks: tuple[int, ...],
+    line_edge_masks: tuple[int, ...],
+    remaining_mask: int,
+    round_index: int,
+    underground_count: int,
+    draw_count: int,
+    target_symbol: str | None,
+    wild: bool,
+    source_any: bool,
+) -> int:
+    """Return standard-game legal edges using the native rule implementation."""
+
+    if target_symbol is not None and target_symbol not in _SYMBOL_TO_INDEX:
+        raise GameError(f"unknown target symbol: {target_symbol}")
+    state = _make_public_state(
+        order=order,
+        line_station_masks=line_station_masks,
+        line_edge_masks=line_edge_masks,
+        remaining_mask=remaining_mask,
+        round_index=round_index,
+        underground_count=underground_count,
+        draw_count=draw_count,
+        terminated=False,
+    )
+    return native_legal_edge_mask(
+        state,
+        target_symbol=(
+            -1 if target_symbol is None else _SYMBOL_TO_INDEX[target_symbol]
+        ),
+        wild=wild,
+        source_any=source_any,
+    )
 
 
 class GameSession:
@@ -790,8 +655,8 @@ class GameSession:
         cls,
         *,
         order: tuple[str, ...],
-        line_station_masks: tuple[int, int, int, int],
-        line_edge_masks: tuple[int, int, int, int],
+        line_station_masks: tuple[int, ...],
+        line_edge_masks: tuple[int, ...],
         remaining_mask: int,
         round_index: int,
         underground_count: int,
@@ -799,23 +664,17 @@ class GameSession:
         terminated: bool = False,
     ) -> GameSession:
         snapshot = NativeGameSnapshot()
-        state = snapshot.state
         validated_order = cls._validate_order(tuple(order))
-        for color_index, color in enumerate(COLORS):
-            station_mask = int(line_station_masks[color_index])
-            edge_mask = int(line_edge_masks[color_index])
-            state.line_station_masks[color_index] = station_mask
-            for word in range(3):
-                state.line_edge_words[color_index][word] = (
-                    edge_mask >> (word * 64)
-                ) & _MASK64
-        for index, color in enumerate(validated_order):
-            state.order[index] = _COLOR_TO_INDEX[color]
-        state.remaining_mask = remaining_mask
-        state.round_index = round_index
-        state.underground_count = underground_count
-        state.draw_count = draw_count
-        state.terminated = int(terminated)
+        snapshot.state = _make_public_state(
+            order=validated_order,
+            line_station_masks=line_station_masks,
+            line_edge_masks=line_edge_masks,
+            remaining_mask=remaining_mask,
+            round_index=round_index,
+            underground_count=underground_count,
+            draw_count=draw_count,
+            terminated=terminated,
+        )
         for index in range(4):
             snapshot.power_assignments[index] = -1
         handle = ctypes.c_void_p()

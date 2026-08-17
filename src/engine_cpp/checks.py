@@ -6,12 +6,15 @@ import pickle
 
 from . import (
     COLORS,
+    DECK,
+    LONDON,
     PENCIL_POWER_CIRCLE,
     PENCIL_POWER_DOUBLE,
     PENCIL_POWER_SWITCH,
     PENCIL_POWER_WILD,
     Action,
     GameSession,
+    legal_edge_mask,
 )
 
 
@@ -77,6 +80,50 @@ def _choose(actions: tuple[Action, ...], decision_index: int) -> Action | None:
     return candidates[decision_index % len(candidates)]
 
 
+def _check_metadata() -> None:
+    if len(LONDON.stations) != 53 or len(LONDON.edges) != 155:
+        raise AssertionError("native London metadata has unexpected dimensions")
+    if LONDON.district_count != 13 or len(LONDON.district_names) != 13:
+        raise AssertionError("native London district metadata is incomplete")
+    if len(DECK) != 11 or not DECK[-1].switch:
+        raise AssertionError("native deck metadata is inconsistent")
+
+
+def _check_legal_mask(game: GameSession) -> None:
+    pending = game.pending
+    if pending is None:
+        raise AssertionError("legal-mask check requires a pending event")
+    lines = game.lines
+    expected = sum(1 << action.edge_id for action in game.legal_actions())
+    actual = legal_edge_mask(
+        order=game.order,
+        line_station_masks=tuple(lines[color].station_mask for color in COLORS),
+        line_edge_masks=tuple(lines[color].edge_mask for color in COLORS),
+        remaining_mask=game.remaining_card_mask,
+        round_index=game.round_index,
+        underground_count=game.underground_count,
+        draw_count=game.draw_count,
+        target_symbol=pending.target_symbol,
+        wild=pending.wild,
+        source_any=pending.source_any,
+    )
+    _assert_equal(expected, actual, "native legal-edge mask")
+
+
+def _check_seeded_legal_masks() -> None:
+    decision = 0
+    for seed in range(32):
+        game = GameSession(seed=seed)
+        while game.status == "playing":
+            game.draw()
+            while game.pending is not None:
+                _check_legal_mask(game)
+                actions = game.legal_actions()
+                action = actions[(seed + decision) % len(actions)] if actions else None
+                game.apply_legal_action(action)
+                decision += 1
+
+
 def _check_known_game(*, advanced: bool) -> None:
     kwargs: dict[str, object] = {
         "order": _ORDER,
@@ -98,6 +145,8 @@ def _check_known_game(*, advanced: bool) -> None:
                 break
             game.draw_known_cards(card_ids)
             while game.pending is not None:
+                if not advanced:
+                    _check_legal_mask(game)
                 actions = game.legal_actions()
                 action = _choose(actions, decision_index)
                 if action is not None:
@@ -146,6 +195,8 @@ def _check_pickle_continuation() -> None:
 
 
 def main() -> None:
+    _check_metadata()
+    _check_seeded_legal_masks()
     _check_known_game(advanced=False)
     _check_known_game(advanced=True)
     _check_pickle_continuation()

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import ctypes
 from dataclasses import dataclass, field
 
+from ._native import GameError, NativeCardInfo, _native
 from .london import LONDON, LondonMap, SYMBOLS
 
 
-TOURIST_TRACK = (0, 1, 2, 4, 6, 8, 11, 14, 17, 21, 25)
-INTERCHANGE_POINTS = {2: 2, 3: 5, 4: 9}
 SHARED_OBJECTIVES = (
     "eight-interchanges",
     "all-districts",
@@ -39,26 +38,30 @@ class Card:
     switch: bool = False
 
 
-def _build_deck() -> tuple[Card, ...]:
+def _load_deck() -> tuple[Card, ...]:
+    native = _native()
+    library = native.library
     cards: list[Card] = []
-    next_id = 0
-    for underground, prefix in ((True, "underground"), (False, "street")):
-        for symbol in SYMBOLS:
-            cards.append(
-                Card(next_id, f"{prefix}-{symbol}", symbol, underground)
-            )
-            next_id += 1
-        cards.append(Card(next_id, f"{prefix}-joker", None, underground))
-        next_id += 1
-        if not underground:
-            cards.append(
-                Card(next_id, "street-switch", None, False, switch=True)
-            )
-            next_id += 1
+    for card_id in range(int(library.ns_card_count())):
+        info = NativeCardInfo()
+        native.check(library.ns_card_get(card_id, ctypes.byref(info)))
+        if int(info.id) != card_id:
+            raise RuntimeError("native card metadata is not ordered by id")
+        symbol_index = int(info.symbol)
+        symbol = None if symbol_index < 0 else SYMBOLS[symbol_index]
+        underground = bool(info.underground)
+        switch = bool(info.is_switch)
+        prefix = "underground" if underground else "street"
+        name = (
+            "street-switch"
+            if switch
+            else f"{prefix}-{symbol if symbol is not None else 'joker'}"
+        )
+        cards.append(Card(card_id, name, symbol, underground, switch))
     return tuple(cards)
 
 
-DECK = _build_deck()
+DECK = _load_deck()
 DECK_BY_ID = {card.id: card for card in DECK}
 
 
@@ -81,27 +84,14 @@ class LineState:
         self.stations.add(self.start)
         self.station_mask = sum(1 << station_id for station_id in self.stations)
         self.edge_mask = sum(1 << edge_id for edge_id in self.edges)
-        if not self.edges:
-            self._leaf_stations = {self.start}
-
-    def _cached_leaves(self, game_map: LondonMap) -> set[int]:
-        leaves = self._leaf_stations
-        if leaves is None:
-            degree: Counter[int] = Counter()
-            for edge_id in self.edges:
-                edge = game_map.edge(edge_id)
-                degree[edge.u] += 1
-                degree[edge.v] += 1
-            leaves = {
-                station_id
-                for station_id in self.stations
-                if degree[station_id] <= 1
-            }
-            self._leaf_stations = leaves
-        return leaves
 
     def leaves(self, game_map: LondonMap = LONDON) -> set[int]:
-        return set(self._cached_leaves(game_map))
+        if game_map is not LONDON:
+            raise GameError("the C++ engine currently supports only the London map")
+        leaves = self._leaf_stations
+        if leaves is None:
+            raise RuntimeError("line leaf data was not supplied by the native engine")
+        return set(leaves)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +163,3 @@ class FinalScore:
     objectives_completed: int
     objective_bonus: int
     total: int
-
-
-class GameError(ValueError):
-    """A user action that violates the native game rules."""

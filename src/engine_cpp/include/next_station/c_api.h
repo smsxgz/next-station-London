@@ -60,6 +60,32 @@ typedef struct ns_state_metrics {
     int32_t final_total;
 } ns_state_metrics;
 
+typedef struct ns_station_info {
+    int32_t id;
+    int32_t x;
+    int32_t y;
+    int8_t symbol;
+    int8_t district;
+    uint8_t tourist;
+    int8_t departure_color;
+} ns_station_info;
+
+typedef struct ns_edge_info {
+    int32_t id;
+    int32_t u;
+    int32_t v;
+    uint8_t crosses_thames;
+    uint16_t district_mask;
+    uint64_t conflict_words[3];
+} ns_edge_info;
+
+typedef struct ns_card_info {
+    int32_t id;
+    int8_t symbol;
+    uint8_t underground;
+    uint8_t is_switch;
+} ns_card_info;
+
 typedef struct ns_game_snapshot {
     ns_public_state state;
     uint64_t line_leaf_masks[4];
@@ -127,6 +153,24 @@ NS_ENGINE_API int ns_expand_afterstate(
 NS_ENGINE_API int ns_analyze_afterstate(
     const ns_public_state* input,
     ns_state_metrics* metrics);
+
+/* Read-only metadata from the native London map and card deck. */
+NS_ENGINE_API int32_t ns_station_count(void);
+NS_ENGINE_API int32_t ns_edge_count(void);
+NS_ENGINE_API int32_t ns_card_count(void);
+NS_ENGINE_API int32_t ns_district_count(void);
+NS_ENGINE_API int ns_station_get(int32_t id, ns_station_info* destination);
+NS_ENGINE_API int ns_edge_get(int32_t id, ns_edge_info* destination);
+NS_ENGINE_API int ns_card_get(int32_t id, ns_card_info* destination);
+NS_ENGINE_API const char* ns_district_name(int32_t id);
+
+/* Return the standard-game legal edge mask for one visible event. */
+NS_ENGINE_API int ns_legal_edge_mask(
+    const ns_public_state* input,
+    int8_t target_symbol,
+    uint8_t wild,
+    uint8_t source_any,
+    uint64_t destination[3]);
 
 /* Encode canonical afterstates into row-major float32 feature vectors. */
 NS_ENGINE_API int ns_feature_afterstates(
@@ -226,6 +270,9 @@ NS_ENGINE_API int32_t ns_public_state_size(void);
 NS_ENGINE_API int32_t ns_outcome_size(void);
 NS_ENGINE_API int32_t ns_candidate_size(void);
 NS_ENGINE_API int32_t ns_state_metrics_size(void);
+NS_ENGINE_API int32_t ns_station_info_size(void);
+NS_ENGINE_API int32_t ns_edge_info_size(void);
+NS_ENGINE_API int32_t ns_card_info_size(void);
 NS_ENGINE_API int32_t ns_game_snapshot_size(void);
 NS_ENGINE_API int32_t ns_game_action_size(void);
 NS_ENGINE_API int32_t ns_game_options_size(void);

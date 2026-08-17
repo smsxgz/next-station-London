@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import ctypes
 import itertools
-import os
-import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -15,25 +13,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from engine_cpp import COLORS
+from engine_cpp._native import (
+    NativePublicState,
+    native_library_path as default_native_library_path,
+)
 
 from .codec import OBSERVATION_DIM, AfterstateRecord
 
 _ORDERS = tuple(itertools.permutations(COLORS))
 _COLOR_TO_INDEX = {color: index for index, color in enumerate(COLORS)}
-
-
-class NativePublicState(ctypes.Structure):
-    _pack_ = 1
-    _fields_ = (
-        ("line_station_masks", ctypes.c_uint64 * 4),
-        ("line_edge_words", (ctypes.c_uint64 * 3) * 4),
-        ("remaining_mask", ctypes.c_uint16),
-        ("order", ctypes.c_uint8 * 4),
-        ("round_index", ctypes.c_uint8),
-        ("underground_count", ctypes.c_uint8),
-        ("draw_count", ctypes.c_uint8),
-        ("terminated", ctypes.c_uint8),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,40 +105,10 @@ def _native_states(records: Sequence[AfterstateRecord]) -> ctypes.Array:
     return states
 
 
-def _default_library_path() -> Path:
-    configured = os.environ.get("NEXT_STATION_NATIVE_LIBRARY")
-    if configured:
-        path = Path(configured).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"native engine library does not exist: {path}")
-        return path
-
-    root = Path(__file__).resolve().parents[3]
-    if sys.platform == "win32":
-        names = ("next_station_engine_capi.dll",)
-    elif sys.platform == "darwin":
-        names = ("libnext_station_engine_capi.dylib",)
-    else:
-        names = ("libnext_station_engine_capi.so",)
-    candidates = tuple(
-        directory / name
-        for directory in (
-            root / "build" / "engine-cpp",
-            root / "build" / "engine-cpp" / "Release",
-        )
-        for name in names
-    )
-    for path in candidates:
-        if path.is_file():
-            return path
-    searched = ", ".join(str(path) for path in candidates)
-    raise FileNotFoundError("native engine is not built; searched " + searched)
-
-
 class NativeFeatureBackend:
     def __init__(self, library_path: Path | None = None) -> None:
         self.library_path = (
-            _default_library_path()
+            default_native_library_path()
             if library_path is None
             else library_path.expanduser().resolve()
         )

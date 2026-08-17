@@ -40,6 +40,7 @@ cmake -S src/engine_cpp -B build/engine-cpp `
   -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/engine-cpp --parallel
 build/engine-cpp/next_station_engine_check.exe
+build/engine-cpp/solver-cpp/next_station_solver_check.exe
 ```
 
 Python 默认从 `build/engine-cpp` 加载动态库；也可以通过
@@ -65,10 +66,15 @@ Seed 只控制真实对局的颜色顺序和洗牌。Random player 的动作、G
 
 ## Solver
 
+Lookahead 与标准 MCTS 的搜索循环位于 `src/solver/cpp`，直接复制并推进 C++
+游戏状态；同目录的 Python policy 只负责稳定的公开接口、结果对象和根节点同分
+选择。Random 与单步 Greedy 的 Python 开销很小，仍直接调用原生引擎；MCTS
+内部的 Greedy rollout 已在 C++ 中执行。
+
 - `GreedyPolicy`：最大化当前动作的精确即时计分增量，同分随机。
 - `DepthKPolicy`：使用统一递归枚举未来 `k` 次公开翻牌及其概率，不附加叶节点估值。
 - `Depth2Policy`：与 `DepthKPolicy(2)` 数学等价的显式特化实现，避免通用递归在最常用深度上的额外开销。
-- `MCTSPolicy`：公共状态上的 chance-sampled UCT；每个节点包含 pass，未知抽牌只从当前剩余牌中采样，首次到达的状态使用确定性 Greedy 完成对局。
+- `MCTSPolicy`：公共状态上的 chance-sampled UCT；每个节点包含 pass，未知抽牌只从当前剩余牌中采样，首次到达的状态默认使用确定性 Greedy 完成对局，也可用 `rollout_policy="lookahead-2"` 或 `rollout_policy="simple-random"` 替换完整 rollout。
 - `solver.RL`：London 基础规则固定动作空间上的 Masked Double DQN 和批量 DQN-rollout MCTS；只编码公开信息，不读取隐藏牌序，当前不支持进阶模块。
 
 Shared Objectives 与 Pencil Powers 是两个独立开关。共同目标在首次达成时产生与终局 `+10` 完全等价的即时奖励；Circle 只把所圈车站在当前线路对应区域的站数中额外计一次，不会制造真实站点或帮助共同目标。Double Section 的第二段作为同一次翻牌下的后续决策，不额外消耗 Lookahead 深度。
@@ -163,9 +169,8 @@ python -m experiments.dqn_mcts `
 状态键、编码、GPU 推理和 rollout step 的分阶段耗时；正常实验不启用它，以免
 细粒度计时影响吞吐。
 
-当前基准中的 DQN-MCTS-800 结果 `155.86 +/- 1.06` 来自引入异步调度和
-子树复用之前的实现，耗时 1:53:57，平均物理推理 batch 为 `17.4`。新实现
-使用不同的 policy 名称写结果，避免与旧 JSONL 混合。
+旧的 DQN-MCTS benchmark 记录已从 `benchmark_results` 清理；重新运行时请
+使用上面的命令生成独立输出，不要与维护中的标准基线 JSONL 混合。
 
 RTX 4060 Ti 上的 10M-transition、1-step、uniform replay 实验如下；checkpoint 在现有 200 seeds 上选择并评估：
 
@@ -187,6 +192,10 @@ python -m experiments.mcts `
 
 默认使用 `5120 / 22.5`。每局完成后立即追加 UTF-8 JSONL；再次执行同一命令会跳过已有 seed。单 policy runner 只写 JSONL，统计结果打印到终端。
 
+`experiments.mcts` 的 `--rollout-policy` 默认为 `greedy`；设为
+`lookahead-2` 或 `simple-random` 会生成带对应 `rollout-*` 后缀的独立结果文件，
+不覆盖 Greedy-rollout 基线。
+
 实验入口可追加 `--shared-objectives` 或 `--pencil-powers` 独立开启模块；`--advanced` 等价于同时开启两者。例如：
 
 ```powershell
@@ -205,10 +214,24 @@ python -m experiments.benchmark `
   --seeds-from benchmark_results/current_200/manifest.json `
   --games 200 `
   --workers 16 `
-  --output-dir benchmark_results/new_benchmark
+  --output-dir benchmark_results/current_200
 ```
 
-完整 benchmark 保留各 policy 的 JSONL、`manifest.json` 和唯一一份总体 `summary.md`。
+`experiments.benchmark` 负责标准搜索结果；根目录的统一 `summary.md` 由下面的
+聚合命令扫描 `games/` 中的实际结果生成。
+
+标准搜索、Full-Q 和 afterstate 都完成后，自动扫描各 seed 集 `games/` 下的
+全部 JSON/JSONL 并重建统一汇总：
+
+```powershell
+python benchmark_results/summarize.py
+```
+
+统一表格按同一组 seed 比较所有 solver，包含均值、标准误、范围、中位数、
+逐 seed 单独/并列最高次数，以及逐 seed 事后最高分的同口径统计。工具会自动
+登记新结果；Afterstate 和 Full-Q 在主表中只保留“最佳推理模式均分”最高的
+checkpoint，全部 checkpoint 另列小表。尚未覆盖完整 seed 集的文件只显示临时
+统计，不参与正式排名。
 
 比较两个策略时必须使用相同 seed：
 
@@ -222,7 +245,14 @@ python -m experiments.compare `
 
 ## 当前基准与目标
 
-当前 200-seed 重跑结果为：Simple random `94.98`、Greedy `125.16`、Lookahead-2 `137.99`、Lookahead-4 `148.40`、DQN-MCTS-800 `155.86`、默认 MCTS `157.05 +/- 1.03`；MCTS 最高单局为 `196`。汇总保存在 `benchmark_results/current_200/summary.md`。
+当前评测结果统一保存在 `benchmark_results/current_200/`，具体 JSONL/JSON
+位于其 `games/` 子目录，汇总位于 `summary.md`。
+current_200 上的搜索基线为：Random `94.49`、Greedy `123.63`、
+Lookahead-2 `137.08`、Lookahead-3 `143.88`、Lookahead-4 `147.93`、
+MCTS-5120 `156.87`。Full-Q 的 exact chance depth-1/2 分别为
+`149.66`/`153.49`；group-9p75m afterstate online-online 为 `157.115`。
+独立的 4,096-seed 确认结果统一保存在 `benchmark_results/large_4096/`，
+具体结果位于 `games/`，汇总位于 `summary.md`。
 
 下一阶段应以固定 seed 集上的均分为主指标：
 

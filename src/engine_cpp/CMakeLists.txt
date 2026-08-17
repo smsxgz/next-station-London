@@ -40,3 +40,5 @@ if (MINGW)
         -static-libgcc -static-libstdc++
     )
 endif()
+
+add_subdirectory(../solver/cpp solver-cpp)
